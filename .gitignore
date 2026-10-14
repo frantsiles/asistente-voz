@@ -1,0 +1,5 @@
+venv/
+modelos/
+grabaciones/
+__pycache__/
+config.json

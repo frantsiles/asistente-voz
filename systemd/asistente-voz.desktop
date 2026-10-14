@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Asistente de voz
+Comment=Escuchar un comando de voz
+Exec=systemctl --user kill -s USR1 --kill-whom=main asistente-voz.service
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;

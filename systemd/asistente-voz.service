@@ -1,0 +1,12 @@
+[Unit]
+Description=Asistente de voz local (Whisper + Ollama + Piper)
+After=graphical-session.target pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@DIR@/venv/bin/python -I @DIR@/asistente.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

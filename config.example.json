@@ -1,0 +1,10 @@
+{
+  "proyectos": "~/Proyectos",
+  "compose": "~/Proyectos/docker-compose.yml",
+  "terminal": "kitty",
+  "apps_terminal": ["htop", "btop", "lazygit", "lazydocker", "k9s"],
+  "alias_apps": {"mongo": "com.mongodb.Compass"},
+  "modelo_comandos": "llama3.2",
+  "modelo_preguntas": "llama3.2",
+  "hablar": true
+}
