@@ -93,11 +93,13 @@ DIRS_DESKTOP = [HOME / ".local/share/applications", HOME / ".local/share/flatpak
 # Palabra de activación ("" = solo atajo de teclado). Un Whisper diminuto la busca al inicio de cada
 # frase que escucha y el modelo principal la confirma antes de activar nada.
 PALABRA_ACTIVACION = CFG.get("palabra_activacion", "hey nova")
-VARIANTES_ACTIVACION = CFG.get("variantes_activacion", ["oye nova"])
+# Whisper suele escribir "Nova" como el nombre inglés "Noah"
+VARIANTES_ACTIVACION = CFG.get("variantes_activacion", ["oye nova", "hey noah"])
 UMBRAL_ACTIVACION = CFG.get("umbral_activacion", 0.87)   # más alto = menos falsos positivos
 WHISPER_ACTIVACION = BASE / "modelos/whisper-tiny-int8-ov"
 VENTANA_ACTIVACION = 2.0      # segundos iniciales de cada frase en los que se busca la palabra
 FILTRO_ACTIVACION = 0.70      # similitud mínima para pasar al modelo principal
+FILTRO_SEGURO = 0.90          # si el filtro está así de seguro, basta una confirmación >= FILTRO_ACTIVACION
 
 RATE = 16000
 BLOQUE = 480                  # 30 ms
@@ -313,6 +315,13 @@ def transcribir(pipeline, audio, **kw):
         return pipeline.generate(audio.tolist(), task="transcribe", language="<|es|>", **kw).texts[0].strip()
 
 
+def recita_pista(texto, pista):
+    """Con audio casi en silencio, Whisper a veces "recita" la pista de vocabulario."""
+    t = " ".join(palabras_norm(texto))
+    terminos = {" ".join(palabras_norm(x)) for x in pista.split(",")}
+    return sum(1 for x in terminos if x and f" {x} " in f" {t} ") >= 3
+
+
 def palabras_norm(texto):
     return re.sub(r"[^a-z0-9 ]", " ", normalizar(texto)).split()
 
@@ -338,11 +347,11 @@ def quitar_palabras(texto, n):
     return " ".join(tokens).lstrip(" ,.!¡¿?")
 
 
-def guardar_grabacion(audio, conservar=10):
+def guardar_grabacion(audio, conservar=10, carpeta="grabaciones", sufijo=""):
     """Guarda las últimas grabaciones para poder diagnosticar errores de transcripción."""
-    d = BASE / "grabaciones"
-    d.mkdir(exist_ok=True)
-    with wave.open(str(d / time.strftime("%Y%m%d-%H%M%S.wav")), "wb") as w:
+    d = BASE / carpeta
+    d.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(d / time.strftime(f"%Y%m%d-%H%M%S{sufijo}.wav")), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(RATE)
@@ -769,7 +778,7 @@ class Asistente:
                 texto = quitar_palabras(texto, n)
         return texto
 
-    def atender(self, previo=None, umbral=None, silencio=0.0):
+    def atender(self, previo=None, umbral=None, silencio=0.0, filtro=0.0):
         """Atiende un comando. Con `previo`, viene de la palabra de activación y la frase ya empezó."""
         if not self.ocupado.acquire(blocking=False):
             return
@@ -786,8 +795,12 @@ class Asistente:
                 self.escuchando = False
                 texto = self._transcribir(audio)
                 puntaje, n = puntaje_activacion(texto)
-                log(f"activación: «{texto}» puntaje {puntaje:.2f} (mínimo {UMBRAL_ACTIVACION})")
-                if puntaje < UMBRAL_ACTIVACION:
+                ok = puntaje >= UMBRAL_ACTIVACION or (filtro >= FILTRO_SEGURO and puntaje >= FILTRO_ACTIVACION)
+                log(f"activación: «{texto}» filtro {filtro:.2f}, confirmación {puntaje:.2f} -> "
+                    f"{'ACTIVA' if ok else 'rechazada'}")
+                guardar_grabacion(audio, conservar=20, carpeta="grabaciones/activacion",
+                                  sufijo=f"-{'si' if ok else 'no'}-{filtro:.2f}-{puntaje:.2f}")
+                if not ok:
                     return
                 guardar_grabacion(audio)
                 texto = quitar_palabras(texto, n)
@@ -801,7 +814,8 @@ class Asistente:
             self.ocupado.release()
 
     def _procesar(self, texto, t_stt):
-        if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES):
+        if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES) or recita_pista(texto, self.pista):
+            log(f"descartado (alucinación de Whisper): «{texto[:80]}»")
             notificar("No te entendí / Didn't catch that", "", segundos=2)
             return
         lang = idioma(texto)
@@ -866,10 +880,11 @@ class Asistente:
                 if dur >= 0.4:
                     audio = np.concatenate(seg[:ventana]).astype(np.float32) / 32768.0
                     texto = transcribir(self.whisper_activacion, audio)
-                    if puntaje_activacion(texto)[0] >= FILTRO_ACTIVACION:
-                        log(f"¿activación? «{texto.strip()}»")
+                    filtro = puntaje_activacion(texto)[0]
+                    if filtro >= FILTRO_ACTIVACION:
+                        log(f"¿activación? «{texto.strip()}» ({filtro:.2f})")
                         try:
-                            self.atender(previo=seg, umbral=umbral, silencio=silencio)
+                            self.atender(previo=seg, umbral=umbral, silencio=silencio, filtro=filtro)
                         except Exception as e:
                             log(f"error: {e}")
                         fin = True

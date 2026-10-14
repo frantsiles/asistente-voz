@@ -55,13 +55,13 @@ Configúrala en `config.json`:
 
 ```json
 "palabra_activacion": "hey nova",
-"variantes_activacion": ["oye nova"],
+"variantes_activacion": ["oye nova", "hey noah"],
 "umbral_activacion": 0.87
 ```
 
 - `""` en `palabra_activacion` la desactiva (solo atajo) y el micrófono deja de estar abierto.
 - **Elige una palabra que no se confunda con frases comunes.** "Nova" suena como "no va" en español: el umbral de 0,87 y exigir el "Hey" lo evitan («y no va a llegar» → 0,83, rechazado), pero "Hey Nora" queda en 0,86, justo por debajo. Nombres de 2–3 sílabas poco comunes ("Hey Jarvis", "Oye Atlas") dan menos falsos positivos.
-- El journal registra cada candidato con su puntuación (`activación: «…» puntaje 0.91`) para ajustar el umbral con tu voz.
+- El journal registra cada candidato con sus puntuaciones (`activación: «…» filtro 0.92, confirmación 0.71 -> ACTIVA`) y los últimos 20 intentos se guardan en `grabaciones/activacion/` para ajustar el umbral con tu voz.
 
 ## Requisitos
 
@@ -104,7 +104,7 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
 | `palabra_activacion` | `hey nova` | Frase que activa el asistente; `""` = solo atajo |
-| `variantes_activacion` | `["oye nova"]` | Otras formas aceptadas |
+| `variantes_activacion` | `["oye nova", "hey noah"]` | Otras formas aceptadas (Whisper suele escribir "Nova" como "Noah") |
 | `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
 
 Después de cambiar algo:
