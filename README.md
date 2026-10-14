@@ -1,11 +1,12 @@
 # Asistente de voz local para KDE
 
-Asistente de voz **100 % local y offline** para Linux con KDE Plasma. Pulsas un atajo, hablas en **español o inglés**, y abre aplicaciones o proyectos, controla Docker, el volumen y la música, consulta el estado del equipo o responde preguntas. Contesta en voz alta en el mismo idioma.
+Asistente de voz **100 % local y offline** para Linux con KDE Plasma. Dices **"Hey Nova"** (o pulsas un atajo), hablas en **español o inglés**, y abre aplicaciones o proyectos, controla Docker, el volumen y la música, consulta el estado del equipo o responde preguntas. Contesta en voz alta en el mismo idioma.
 
 Nada sale de tu equipo: la transcripción, la interpretación y la voz corren en tu CPU/GPU.
 
 ```mermaid
 flowchart LR
+    W["«Hey Nova»<br/>Whisper tiny · CPU"] --> B
     A[Atajo de teclado] --> B[Grabación<br/>PipeWire + detección de silencio]
     B --> C[Whisper medium<br/>OpenVINO · GPU/CPU]
     C --> D{¿Regla rápida?}
@@ -17,11 +18,12 @@ flowchart LR
 
 ## Características
 
+- **Palabra de activación configurable**: "Hey Nova" por defecto; puedes poner la que quieras. Funciona de corrido ("Hey Nova, abre kitty") o con pausa ("Hey Nova" → aviso → "abre kitty").
 - **Bilingüe**: Whisper detecta el idioma y la respuesta usa una voz en español o en inglés.
 - **Abre cualquier aplicación instalada**: lee los `.desktop` igual que el menú de KDE, incluidas las apps de Flatpak. Las herramientas de consola (`htop`, `lazygit`, `lazydocker`, `k9s`…) se abren dentro de tu terminal.
 - **Rápido**: los comandos comunes se resuelven con reglas, sin pasar por el modelo de lenguaje. Solo las frases ambiguas usan el LLM.
 - **Seguro**: solo puede ejecutar acciones de una lista blanca, nunca comandos arbitrarios. Además, una acción del LLM solo se acepta si la frase contiene palabras que la respalden. Si el modelo "adivina" `bloquear_pantalla` ante una frase sin sentido, se descarta.
-- **Ligero en espera**: ~550 MB de RAM y 0 % de CPU mientras no lo usas.
+- **Ligero en espera**: ~900 MB de RAM y menos del 1 % de CPU escuchando la palabra de activación.
 
 ## Comandos
 
@@ -40,7 +42,26 @@ flowchart LR
 | "Bloquea la pantalla" | "Lock the screen" | Bloquea la sesión |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
-Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase. Si pulsas el atajo otra vez mientras escucha, corta la grabación.
+Di **"Hey Nova"** seguido del comando, o pulsa el atajo: suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase. Si pulsas el atajo otra vez mientras escucha, corta la grabación.
+
+## Palabra de activación
+
+Cómo funciona, en dos fases para no gastar recursos ni activarse por error:
+
+1. Un detector de voz por energía escucha continuamente (coste casi nulo). Cuando alguien empieza a hablar, **Whisper tiny** (0,13 s en CPU) transcribe los primeros 2 segundos y los compara, con tolerancia, con la palabra de activación.
+2. Si se parece, el modelo principal (**Whisper medium**) transcribe la frase completa y **confirma** antes de activar nada. Esa transcripción es la misma que se usa para el comando, así que la confirmación no añade trabajo.
+
+Configúrala en `config.json`:
+
+```json
+"palabra_activacion": "hey nova",
+"variantes_activacion": ["oye nova"],
+"umbral_activacion": 0.87
+```
+
+- `""` en `palabra_activacion` la desactiva (solo atajo) y el micrófono deja de estar abierto.
+- **Elige una palabra que no se confunda con frases comunes.** "Nova" suena como "no va" en español: el umbral de 0,87 y exigir el "Hey" lo evitan («y no va a llegar» → 0,83, rechazado), pero "Hey Nora" queda en 0,86, justo por debajo. Nombres de 2–3 sílabas poco comunes ("Hey Jarvis", "Oye Atlas") dan menos falsos positivos.
+- El journal registra cada candidato con su puntuación (`activación: «…» puntaje 0.91`) para ajustar el umbral con tu voz.
 
 ## Requisitos
 
@@ -82,6 +103,9 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `modelo_comandos` | `llama3.2` | Modelo de Ollama que interpreta los comandos |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
+| `palabra_activacion` | `hey nova` | Frase que activa el asistente; `""` = solo atajo |
+| `variantes_activacion` | `["oye nova"]` | Otras formas aceptadas |
+| `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
 
 Después de cambiar algo:
 
@@ -118,10 +142,13 @@ Cada comando se registra así: `«texto» [idioma] -> acción(parámetro) [voz 1
 
 **Transcribe basura en la GPU** (p. ej. «A P P?»): no uses `CACHE_DIR` con `WhisperPipeline` en la GPU. El modelo cargado desde la caché compilada produce salida corrupta (fallo de OpenVINO 2026.4).
 
+**`Language token id -1 not found`**: la detección automática de idioma de OpenVINO Whisper falla con algunos audios. `transcribir()` reintenta en español.
+
 **NPU**: OpenVINO detecta el NPU de Intel, pero el paquete `intel-npu-driver` de Fedora no incluye el compilador del NPU, así que la compilación falla con `ZE_RESULT_ERROR_UNSUPPORTED_FEATURE`. Cuando esté disponible, basta con poner `"NPU"` primero en `WHISPER_DISPOSITIVOS`.
 
 ## Privacidad
 
+- Con la palabra de activación, el **micrófono está abierto continuamente** (KDE muestra el indicador). El audio se analiza en memoria y se descarta; no se guarda nada salvo los comandos confirmados.
 - Todo se procesa localmente. La única conexión de red es la descarga inicial de los modelos desde Hugging Face.
 - `grabaciones/` guarda tus últimos 10 comandos de voz solo en tu equipo, para depuración, y está en `.gitignore`.
 
