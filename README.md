@@ -1,12 +1,12 @@
 # Asistente de voz local para KDE
 
-Asistente de voz **100 % local y offline** para Linux con KDE Plasma. Dices **"Hey Nova"** (o pulsas un atajo), hablas en **español o inglés**, y abre aplicaciones o proyectos, controla Docker, el volumen y la música, consulta el estado del equipo o responde preguntas. Contesta en voz alta en el mismo idioma.
+Asistente de voz **100 % local y offline** para Linux con KDE Plasma. Lo llamas por su nombre, **"Oye Nova"** o el que le pongas (o pulsas un atajo), hablas en **español o inglés**, y abre aplicaciones o proyectos, controla Docker, el volumen y la música, consulta el estado del equipo o responde preguntas. Contesta en voz alta en el mismo idioma.
 
 Nada sale de tu equipo: la transcripción, la interpretación y la voz corren en tu CPU/GPU.
 
 ```mermaid
 flowchart LR
-    W["«Hey Nova»<br/>Whisper tiny · CPU"] --> B
+    W["«Oye Nova»<br/>Whisper base · CPU"] --> B
     A[Atajo de teclado] --> B[Grabación<br/>PipeWire + detección de silencio]
     B --> C[Whisper medium<br/>OpenVINO · GPU/CPU]
     C --> D{¿Regla rápida?}
@@ -18,7 +18,7 @@ flowchart LR
 
 ## Características
 
-- **Palabra de activación configurable**: "Hey Nova" por defecto; puedes poner la que quieras. Funciona de corrido ("Hey Nova, abre kitty") o con pausa ("Hey Nova" → aviso → "abre kitty").
+- **Nombre configurable**: el asistente responde a su nombre ("Nova", "Oye Nova", "Hey Nova"); cámbialo en `config.json`. Funciona de corrido ("Oye Nova, abre kitty") o con pausa ("Oye Nova" → aviso → "abre kitty").
 - **Bilingüe**: Whisper detecta el idioma y la respuesta usa una voz en español o en inglés.
 - **Abre cualquier aplicación instalada**: lee los `.desktop` igual que el menú de KDE, incluidas las apps de Flatpak. Las herramientas de consola (`htop`, `lazygit`, `lazydocker`, `k9s`…) se abren dentro de tu terminal.
 - **Rápido**: los comandos comunes se resuelven con reglas, sin pasar por el modelo de lenguaje. Solo las frases ambiguas usan el LLM.
@@ -42,25 +42,27 @@ flowchart LR
 | "Bloquea la pantalla" | "Lock the screen" | Bloquea la sesión |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
-Di **"Hey Nova"** seguido del comando, o pulsa el atajo: suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase. Si pulsas el atajo otra vez mientras escucha, corta la grabación.
+Di **"Oye Nova"** (o el nombre que le hayas puesto) seguido del comando, o pulsa el atajo: suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase. Si pulsas el atajo otra vez mientras escucha, corta la grabación.
 
 ## Palabra de activación
 
 Cómo funciona, en dos fases para no gastar recursos ni activarse por error:
 
-1. Un detector de voz por energía escucha continuamente (coste casi nulo). Cuando alguien empieza a hablar, **Whisper tiny** (0,13 s en CPU) transcribe los primeros 2 segundos y los compara, con tolerancia, con la palabra de activación.
+1. Un detector de voz por energía escucha continuamente (coste casi nulo). Cuando alguien empieza a hablar, **Whisper base** (~0,35 s en CPU) transcribe los primeros 2 segundos y los compara, con tolerancia, con la palabra de activación.
 2. Si se parece, el modelo principal (**Whisper medium**) transcribe la frase completa y **confirma** antes de activar nada. Esa transcripción es la misma que se usa para el comando, así que la confirmación no añade trabajo.
 
 Configúrala en `config.json`:
 
 ```json
-"palabra_activacion": "hey nova",
-"variantes_activacion": ["oye nova", "hey noah"],
+"nombre": "Hades",
 "umbral_activacion": 0.87
 ```
 
+- Con `"nombre": "Hades"` se activa con "Hades", "Oye Hades" y "Hey Hades". Para otra frase, usa `palabra_activacion` y `variantes_activacion`.
 - `""` en `palabra_activacion` la desactiva (solo atajo) y el micrófono deja de estar abierto.
-- **Elige una palabra que no se confunda con frases comunes.** "Nova" suena como "no va" en español: el umbral de 0,87 y exigir el "Hey" lo evitan («y no va a llegar» → 0,83, rechazado), pero "Hey Nora" queda en 0,86, justo por debajo. Nombres de 2–3 sílabas poco comunes ("Hey Jarvis", "Oye Atlas") dan menos falsos positivos.
+- **Elige un nombre que no se confunda con frases comunes.** Medido con voces sintéticas y frases trampa:
+  - **"Nova"** suena como "no va": «y no va a llegar» puntúa 0,83 y «Hey Nora» 0,86, muy cerca del umbral, y Whisper suele escribirlo como "Noah". Funciona, pero con poco margen.
+  - **"Hades"** tiene más margen: «¿qué haces?», «haces muy bien tu trabajo», «hey these», «ladies» y «Andes» se quedan en ≤ 0,80. Su dificultad es que Whisper tiny lo oye como «Hitties» u «others», por eso el filtro usa Whisper base.
 - El journal registra cada candidato con sus puntuaciones (`activación: «…» filtro 0.92, confirmación 0.71 -> ACTIVA`) y los últimos 20 intentos se guardan en `grabaciones/activacion/` para ajustar el umbral con tu voz.
 
 ## Requisitos
@@ -103,8 +105,9 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `modelo_comandos` | `llama3.2` | Modelo de Ollama que interpreta los comandos |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
-| `palabra_activacion` | `hey nova` | Frase que activa el asistente; `""` = solo atajo |
-| `variantes_activacion` | `["oye nova", "hey noah"]` | Otras formas aceptadas (Whisper suele escribir "Nova" como "Noah") |
+| `nombre` | `Nova` | Nombre del asistente: activación, notificaciones y respuestas |
+| `palabra_activacion` | el nombre | Frase que activa el asistente; `""` = solo atajo |
+| `variantes_activacion` | `oye …`, `hey …` | Otras formas aceptadas |
 | `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
 
 Después de cambiar algo:

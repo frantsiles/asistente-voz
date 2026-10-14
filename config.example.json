@@ -1,8 +1,5 @@
 {
-  "palabra_activacion": "hey nova",
-  "variantes_activacion": [
-    "oye nova"
-  ],
+  "nombre": "Nova",
   "umbral_activacion": 0.87,
   "proyectos": "~/Proyectos",
   "compose": "~/Proyectos/docker-compose.yml",

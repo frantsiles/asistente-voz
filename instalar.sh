@@ -10,13 +10,13 @@ echo "==> Entorno de Python ($PY)"
 "$DIR/venv/bin/pip" install -q --upgrade pip
 "$DIR/venv/bin/pip" install -q -r "$DIR/requirements.txt"
 
-echo "==> Modelos (Whisper medium y tiny ~850 MB + voces ~200 MB)"
+echo "==> Modelos (Whisper medium y base ~900 MB + voces ~200 MB)"
 "$DIR/venv/bin/python" -I - "$DIR/modelos" <<'EOF'
 import sys
 from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 dst = Path(sys.argv[1])
-for m in ["whisper-medium-int8-ov", "whisper-tiny-int8-ov"]:   # comandos / palabra de activación
+for m in ["whisper-medium-int8-ov", "whisper-base-int8-ov"]:   # comandos / palabra de activación
     if not (dst / m).exists():
         snapshot_download("OpenVINO/" + m, local_dir=dst / m)
 for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medium/en_US-lessac-medium.onnx"]:

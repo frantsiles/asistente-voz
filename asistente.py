@@ -90,13 +90,16 @@ ALIAS_APPS = {
 DIRS_DESKTOP = [HOME / ".local/share/applications", HOME / ".local/share/flatpak/exports/share/applications",
                 Path("/var/lib/flatpak/exports/share/applications"), Path("/usr/share/applications")]
 
-# Palabra de activación ("" = solo atajo de teclado). Un Whisper diminuto la busca al inicio de cada
+# Nombre del asistente. Por defecto también es la palabra de activación: "Hades", "Oye Hades", "Hey Hades".
+NOMBRE = CFG.get("nombre", "Nova")
+# Palabra de activación ("" = solo atajo de teclado). Un Whisper pequeño la busca al inicio de cada
 # frase que escucha y el modelo principal la confirma antes de activar nada.
-PALABRA_ACTIVACION = CFG.get("palabra_activacion", "hey nova")
-# Whisper suele escribir "Nova" como el nombre inglés "Noah"
-VARIANTES_ACTIVACION = CFG.get("variantes_activacion", ["oye nova", "hey noah"])
+PALABRA_ACTIVACION = CFG.get("palabra_activacion", NOMBRE.lower())
+VARIANTES_ACTIVACION = CFG.get("variantes_activacion",
+                               [f"oye {PALABRA_ACTIVACION}", f"hey {PALABRA_ACTIVACION}"] if PALABRA_ACTIVACION else [])
 UMBRAL_ACTIVACION = CFG.get("umbral_activacion", 0.87)   # más alto = menos falsos positivos
-WHISPER_ACTIVACION = BASE / "modelos/whisper-tiny-int8-ov"
+# base reconoce nombres poco comunes mucho mejor que tiny ("Hades" -> «Hitties», «others») por 0,2 s más
+WHISPER_ACTIVACION = BASE / "modelos/whisper-base-int8-ov"
 VENTANA_ACTIVACION = 2.0      # segundos iniciales de cada frase en los que se busca la palabra
 FILTRO_ACTIVACION = 0.70      # similitud mínima para pasar al modelo principal
 FILTRO_SEGURO = 0.90          # si el filtro está así de seguro, basta una confirmación >= FILTRO_ACTIVACION
@@ -135,7 +138,7 @@ MSG = {
                   "el disco tiene {d:.0f} gigas libres, y el perfil de energía es {p}.",
         "perfiles": {"performance": "rendimiento", "balanced": "equilibrado", "quiet": "silencioso", "cool": "fresco",
                      "power-saver": "ahorro"},
-        "responde": "Responde en español, en máximo 3 frases cortas. El texto se leerá en voz alta: "
+        "responde": "Te llamas {nombre}, un asistente de voz local. Responde en español, en máximo 3 frases cortas. El texto se leerá en voz alta: "
                     "sin markdown, sin listas, sin bloques de código.",
     },
     "en": {
@@ -156,7 +159,7 @@ MSG = {
                   "the disk has {d:.0f} gigabytes free, and the power profile is {p}.",
         "perfiles": {"performance": "performance", "balanced": "balanced", "quiet": "quiet", "cool": "cool",
                      "power-saver": "power saver"},
-        "responde": "Answer in English, in at most 3 short sentences. The text will be read aloud: "
+        "responde": "Your name is {nombre}, a local voice assistant. Answer in English, in at most 3 short sentences. The text will be read aloud: "
                     "no markdown, no lists, no code blocks.",
     },
 }
@@ -203,7 +206,7 @@ def sonido(nombre):
 
 def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6):
     global _notif_id
-    cmd = ["notify-send", "-p", "-a", "Asistente de voz", "-i", icono, "-t", str(segundos * 1000)]
+    cmd = ["notify-send", "-p", "-a", NOMBRE, "-i", icono, "-t", str(segundos * 1000)]
     if _notif_id:
         cmd += ["-r", _notif_id]
     r = subprocess.run(cmd + [titulo, cuerpo], capture_output=True, text=True)
@@ -585,8 +588,8 @@ def pista_whisper():
     prefijos = [n.split(".")[0] for n in nombres if "." in n]
     nombres = [n.split(".", 1)[1] if "." in n and prefijos.count(n.split(".")[0]) >= 3 else n for n in nombres]
     nombres = [n.replace(".", " ") for n in nombres]
-    return ("VS Code, Visual Studio Code, Firefox, kitty, htop, lazygit, lazydocker, MongoDB Compass, Docker, "
-            + ", ".join(n for n in nombres if n))
+    return (f"{NOMBRE}, VS Code, Visual Studio Code, Firefox, kitty, htop, lazygit, lazydocker, MongoDB Compass, "
+            "Docker, " + ", ".join(n for n in nombres if n))
 
 
 def mpris(metodo, solo_activo=False):
@@ -701,7 +704,7 @@ def ejecutar(accion, param, lang):
 
     if accion == "pregunta":
         notificar(m["pensando"], param, "dialog-question")
-        return ollama(MODELO_PREGUNTAS, m["responde"], param).strip()
+        return ollama(MODELO_PREGUNTAS, m["responde"].format(nombre=NOMBRE), param).strip()
 
     if accion == "error_ollama":
         return m["ollama_error"]
@@ -734,7 +737,7 @@ class Asistente:
         signal.signal(signal.SIGUSR1, self._senal)
         log(f"listo en {time.time() - t:.1f}s (Whisper {WHISPER.name} en {self.dispositivo}, "
             f"{len({a.id for a in APPS.values()})} apps, voces: {', '.join(self.voz.voces)}, "
-            f"activación: {PALABRA_ACTIVACION or 'solo atajo'})")
+            f"nombre: {NOMBRE}, activación: {', '.join([PALABRA_ACTIVACION] + VARIANTES_ACTIVACION) if PALABRA_ACTIVACION else 'solo atajo'})")
 
     def _senal(self, *_):
         if self.escuchando:
