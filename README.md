@@ -140,3 +140,7 @@ systemd/                # servicio de usuario y entrada del menú (atajo)
 - [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai) y [Whisper](https://github.com/openai/whisper): voz a texto
 - [Ollama](https://ollama.com) y [Llama 3.2](https://www.llama.com): interpretación de comandos
 - [Piper](https://github.com/OHF-Voice/piper1-gpl) y las voces de [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices): texto a voz
+
+## Licencia
+
+[GPL-3.0](LICENSE), la misma licencia que Piper, del que depende la síntesis de voz.
