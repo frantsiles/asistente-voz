@@ -16,6 +16,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
 
 ### Corregido
+- Con modelos de razonamiento (Qwen 3.5, Gemma 4) Ollama «pensaba» minutos antes de contestar y la petición caducaba: ahora se envía `think: false`.
 - Pulsar el atajo mientras el servicio arrancaba lo mataba (`SIGUSR1` sin manejador durante la carga de los modelos). Ahora avisa «Arrancando…» y escucha en cuanto está listo.
 - `notify-send` sin timeout podía bloquear el asistente si el servidor de notificaciones no respondía.
 - OpenVINO: reintento en español cuando falla la detección de idioma (`Language token id -1 not found`).

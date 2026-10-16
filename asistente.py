@@ -1799,7 +1799,9 @@ def _peticion_llm(modelo, sistema, usuario, formato=None, stream=False):
     mensajes = [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]
     if LLM == "ollama":
         url = f"{LLM_URL}/api/chat"
-        cuerpo = {"model": modelo, "stream": stream, "keep_alive": KEEP_ALIVE,
+        # think: los modelos con razonamiento (Qwen 3.5, Gemma 4…) piensan minutos antes de contestar;
+        # para elegir una acción o responder en voz alta no compensa. Los demás modelos lo ignoran.
+        cuerpo = {"model": modelo, "stream": stream, "keep_alive": KEEP_ALIVE, "think": False,
                   "options": {"temperature": 0, "num_ctx": NUM_CTX}, "messages": mensajes}
         if formato:
             cuerpo["format"] = formato
