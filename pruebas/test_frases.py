@@ -10,6 +10,9 @@ sys.path.insert(0, str(RAIZ))
 
 import asistente  # noqa: E402
 
+# Los clientes reales del LLM, antes de que preparar_entorno() los sustituya
+LLM_REAL, LLM_STREAM_REAL = asistente.llm, asistente.llm_stream
+
 
 APPS_BASE = {
     "firefox": asistente.App("firefox", "Firefox", ["firefox"]),
@@ -36,7 +39,7 @@ def preparar_entorno(usar_llm: bool = False):
         asistente.APPS.setdefault(clave, valor)
     asistente.TAREAS.update(TAREAS_BASE)
     if not usar_llm:
-        asistente.ollama = lambda *_a, **_kw: json.dumps({"accion": "no_entendido", "parametro": ""})
+        asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "no_entendido", "parametro": ""})
 
 
 def probar_frases(ruta: Path) -> tuple[int, int]:
@@ -119,9 +122,9 @@ def probar_salvaguardas() -> tuple[int, int]:
     )
 
     # 3. Si el LLM alucina valores fuera de lista blanca, interpretar() los rechaza
-    orig_ollama = asistente.ollama
+    orig_llm = asistente.llm
     try:
-        asistente.ollama = lambda *_a, **_kw: json.dumps({"accion": "abrir_app", "parametro": "app_inventada_xyz"})
+        asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "abrir_app", "parametro": "app_inventada_xyz"})
         acc, prm = asistente.interpretar("Por favor ejecuta app_inventada_xyz")
         verificar(
             "Rechaza abrir_app del LLM si resolver_app() no encuentra la app",
@@ -129,7 +132,7 @@ def probar_salvaguardas() -> tuple[int, int]:
             f"devolvió ({acc!r}, {prm!r})",
         )
 
-        asistente.ollama = lambda *_a, **_kw: json.dumps({"accion": "ventana", "parametro": "atajo_inventado"})
+        asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "ventana", "parametro": "atajo_inventado"})
         acc, prm = asistente.interpretar("Mueve la ventana de forma inventada")
         verificar(
             "Rechaza ventana del LLM si el atajo no está en ATAJOS_KWIN",
@@ -137,7 +140,7 @@ def probar_salvaguardas() -> tuple[int, int]:
             f"devolvió ({acc!r}, {prm!r})",
         )
 
-        asistente.ollama = lambda *_a, **_kw: json.dumps({"accion": "ejecutar_tarea", "parametro": "rm -rf /"})
+        asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "ejecutar_tarea", "parametro": "rm -rf /"})
         acc, prm = asistente.interpretar("Corre la tarea borrar todo")
         verificar(
             "Rechaza ejecutar_tarea del LLM si no está en la lista blanca TAREAS",
@@ -145,7 +148,7 @@ def probar_salvaguardas() -> tuple[int, int]:
             f"devolvió ({acc!r}, {prm!r})",
         )
     finally:
-        asistente.ollama = orig_ollama
+        asistente.llm = orig_llm
 
     # 4. Silero VAD cargado y distinguiendo silencio
     verificar(
@@ -294,6 +297,71 @@ def probar_salvaguardas() -> tuple[int, int]:
     with a.ocupado:
         a.atender()
     verificar("atender() con la palabra de activación ocupada encola la pulsación", a.encolado)
+
+    # 9c. Proveedores de LLM: la API nativa de Ollama y la compatible con OpenAI, contra un servidor falso
+    import http.server
+
+    peticiones = []
+
+    class ServidorFalso(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            cuerpo = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            peticiones.append((self.path, cuerpo, self.headers.get("Authorization")))
+            ollama = self.path == "/api/chat"
+            if cuerpo["stream"]:
+                trozos = ["Hola", " mundo.", " Adiós."]
+                if ollama:
+                    lineas = [json.dumps({"message": {"content": t}, "done": False}) for t in trozos]
+                    lineas.append(json.dumps({"message": {"content": ""}, "done": True}))
+                    datos = "\n".join(lineas) + "\n"
+                else:
+                    datos = "".join(f"data: {json.dumps({'choices': [{'delta': {'content': t}}]})}\n\n" for t in trozos)
+                    datos += "data: [DONE]\n\n"
+            else:
+                contenido = json.dumps({"accion": "abrir_app", "parametro": "firefox"})
+                datos = json.dumps({"message": {"content": contenido}} if ollama else
+                                   {"choices": [{"message": {"content": contenido}}]})
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(datos.encode())
+
+    servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ServidorFalso)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{servidor.server_port}"
+    previo = (asistente.LLM, asistente.LLM_URL, asistente.LLM_CLAVE)
+    try:
+        for proveedor, url, ruta in (("ollama", base, "/api/chat"), ("openai", base + "/v1", "/v1/chat/completions")):
+            asistente.LLM, asistente.LLM_URL, asistente.LLM_CLAVE = proveedor, url, "clave-xyz"
+            peticiones.clear()
+            r = json.loads(LLM_REAL("modelo-x", "sistema", "abre firefox", asistente.ESQUEMA))
+            ruta_ok, cuerpo, auth = peticiones[0]
+            esquema_ok = ("format" in cuerpo) if proveedor == "ollama" else \
+                cuerpo.get("response_format", {}).get("type") == "json_schema"
+            verificar(f"LLM {proveedor}: petición, esquema JSON y respuesta",
+                      ruta_ok == ruta and esquema_ok and auth == "Bearer clave-xyz" and r["parametro"] == "firefox",
+                      f"{ruta_ok} {cuerpo} {auth} {r}")
+            oraciones = list(LLM_STREAM_REAL("modelo-x", "sistema", "hola"))
+            verificar(f"LLM {proveedor}: streaming por oraciones", oraciones == ["Hola mundo.", "Adiós."], oraciones)
+
+        # Sin LLM: las frases que necesitan el modelo no se adivinan y las preguntas avisan, sin tocar la red
+        asistente.LLM = "ninguno"
+        peticiones.clear()
+        anterior, asistente.llm = asistente.llm, LLM_REAL
+        try:
+            verificar("llm = ninguno: frase ambigua -> no_entendido sin red",
+                      asistente.interpretar("pon algo tranquilo para concentrarme") == ("no_entendido", "") and not peticiones)
+            respuesta = asistente.ejecutar("pregunta", "qué es docker", "es")
+            verificar("llm = ninguno: no hay pregunta posible", False, f"respondió {respuesta!r}")
+        except asistente.SinLLM:
+            verificar("llm = ninguno: una pregunta lanza SinLLM (se avisa al usuario)", not peticiones)
+        finally:
+            asistente.llm = anterior
+    finally:
+        asistente.LLM, asistente.LLM_URL, asistente.LLM_CLAVE = previo
+        servidor.shutdown()
 
     # 10. No leer contraseñas del portapapeles en voz alta
     for texto, esperado in (("Xk9#mP2$vLq", True), ("ghp_1234567890abcdefXYZ", True), ("hola mundo", False),

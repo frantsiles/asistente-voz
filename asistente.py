@@ -1,7 +1,7 @@
 """Asistente de voz local para KDE (español e inglés).
 
 Flujo: atajo de teclado -> graba hasta que dejas de hablar -> Whisper (OpenVINO en Intel o
-faster-whisper en NVIDIA, detecta el idioma) -> reglas rápidas o llama3.2 (Ollama, GPU) -> acción de una lista blanca ->
+faster-whisper en NVIDIA, detecta el idioma) -> reglas rápidas o un LLM (Ollama u otro servidor) -> acción de una lista blanca ->
 respuesta hablada con Piper en el mismo idioma + notificación.
 
 Se activa enviando SIGUSR1 al servicio (eso hace el atajo):
@@ -27,6 +27,7 @@ import sysconfig
 import threading
 import time
 import unicodedata
+import urllib.parse
 import urllib.request
 import wave
 from pathlib import Path
@@ -68,7 +69,7 @@ CFG = _cargar_config()
 CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps", "tareas", "confirmar",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
               "whisper_precision", "comando_actualizar", "hablar", "nombre", "palabra_activacion",
-              "variantes_activacion", "umbral_activacion"}
+              "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
 WHISPER_MOTOR = CFG.get("whisper", "auto")
@@ -86,7 +87,16 @@ VOCES = {
 }
 HABLAR = CFG.get("hablar", True)   # False = solo notificaciones
 
-OLLAMA = "http://127.0.0.1:11434/api/chat"
+# Modelo de lenguaje: interpreta las frases que no cubren las reglas, responde preguntas y procesa el portapapeles.
+#   "ollama"  -> API nativa de Ollama
+#   "openai"  -> cualquier servidor compatible con la API de OpenAI (/v1/chat/completions): llama.cpp
+#                (llama-server), LM Studio, LocalAI, vLLM, OpenVINO Model Server, el /v1 de Ollama o uno en la nube
+#   "ninguno" -> sin LLM: solo reglas (equipos con pocos recursos); preguntas y portapapeles no disponibles
+LLM = CFG.get("llm", "ollama")
+LLM_URL = (CFG.get("llm_url") or {"ollama": "http://127.0.0.1:11434", "openai": "http://127.0.0.1:8080/v1"}
+           .get(LLM, "")).rstrip("/")
+# La clave nunca va en config.json: se indica el nombre de la variable de entorno que la contiene
+LLM_CLAVE = os.environ.get(CFG["llm_clave_env"], "") if CFG.get("llm_clave_env") else ""
 MODELO_COMANDOS = CFG.get("modelo_comandos", "llama3.2")
 MODELO_PREGUNTAS = CFG.get("modelo_preguntas", "llama3.2")  # uno más grande responde mejor, pero carga más lento
 NUM_CTX = 4096                 # igual para ambos usos, así Ollama no recarga el modelo
@@ -208,7 +218,8 @@ MSG = {
         "perfil": "Perfil {x} activado.", "buscando": "Buscando {x}.",
         "actualizando": "Abriendo la terminal para actualizar. Escribe tu contraseña si te la pide.",
         "actualizar_no": "No sé cómo actualizar este sistema.", "actualizar_fin": "Listo. Pulsa Enter para cerrar.",
-        "ollama_error": "No pude conectar con Ollama.", "no_entendi": "No te entendí.",
+        "llm_error": "No pude conectar con el modelo de lenguaje.",
+        "sin_llm": "No tengo un modelo de lenguaje configurado para eso.", "no_entendi": "No te entendí.",
         "fallo": "Algo falló al ejecutar el comando.", "pensando": "Pensando…",
         "estado": "El procesador está a {t} grados{gpu}, usas {u:.0f} de {m:.0f} gigas de memoria, "
                   "el disco tiene {d:.0f} gigas libres{bat}{red}, y el perfil de energía es {p}.",
@@ -269,7 +280,8 @@ MSG = {
         "perfil": "{x} profile enabled.", "buscando": "Searching for {x}.",
         "actualizando": "Opening a terminal to update. Type your password if asked.",
         "actualizar_no": "I don't know how to update this system.", "actualizar_fin": "Done. Press Enter to close.",
-        "ollama_error": "I couldn't connect to Ollama.", "no_entendi": "Sorry, I didn't understand.",
+        "llm_error": "I couldn't connect to the language model.",
+        "sin_llm": "I don't have a language model configured for that.", "no_entendi": "Sorry, I didn't understand.",
         "fallo": "Something went wrong running the command.", "pensando": "Thinking…",
         "estado": "The CPU is at {t} degrees{gpu}, you're using {u:.0f} of {m:.0f} gigabytes of memory, "
                   "the disk has {d:.0f} gigabytes free{bat}{red}, and the power profile is {p}.",
@@ -301,6 +313,12 @@ def validar_config():
         avisos.append(f"el archivo compose no existe: {COMPOSE}")
     if not shutil.which(TERMINAL):
         avisos.append(f"la terminal configurada ({TERMINAL!r}) no está instalada")
+    if LLM not in ("ollama", "openai", "ninguno"):
+        avisos.append(f"llm desconocido ({LLM!r}): usa ollama, openai o ninguno")
+    elif LLM != "ninguno" and urllib.parse.urlparse(LLM_URL).hostname not in ("127.0.0.1", "localhost", "::1"):
+        avisos.append(f"el LLM está fuera de este equipo ({LLM_URL}): las frases y preguntas salen por la red")
+    if CFG.get("llm_clave_env") and not LLM_CLAVE:
+        avisos.append(f"la variable de entorno {CFG['llm_clave_env']} (llm_clave_env) no está definida")
     for a in avisos:
         log(f"AVISO config: {a}")
     return avisos
@@ -1362,7 +1380,7 @@ def _ej_portapapeles(param, _lang, m):
     clave_prompt = {"resumir": "clip_prompt_resumir", "traducir": "clip_prompt_traducir",
                     "explicar": "clip_prompt_explicar"}.get(param, "clip_prompt_explicar")
     notificar(m["pensando"], recorte[:120], "dialog-question")
-    return ollama(MODELO_PREGUNTAS, m["responde"], m[clave_prompt].format(x=recorte)).strip()
+    return llm(MODELO_PREGUNTAS, m["responde"], m[clave_prompt].format(x=recorte)).strip()
 
 
 def _ej_dictar(param, _lang, m):
@@ -1471,7 +1489,7 @@ def _ej_actualizar_sistema(_param, _lang, m):
 
 def _ej_pregunta(param, _lang, m):
     notificar(m["pensando"], param, "dialog-question")
-    return ollama(MODELO_PREGUNTAS, m["responde"], param).strip()
+    return llm(MODELO_PREGUNTAS, m["responde"], param).strip()
 
 
 # --- Tabla declarativa de acciones e interpretación --------------------------------
@@ -1724,7 +1742,7 @@ PROMPT_COMANDOS = (
 )
 ESQUEMA = {"type": "object",
            "properties": {"accion": {"type": "string", "enum": ACCIONES}, "parametro": {"type": "string"}},
-           "required": ["accion", "parametro"]}
+           "required": ["accion", "parametro"], "additionalProperties": False}
 REGLAS = [(patron, a.nombre, param) for a in REGISTRO_ACCIONES for patron, param in a.reglas]
 EVIDENCIA = {a.nombre: a.evidencia for a in REGISTRO_ACCIONES if a.evidencia}
 EJECUTORES = {a.nombre: a.ejecutor for a in REGISTRO_ACCIONES if a.ejecutor}
@@ -1772,37 +1790,70 @@ def extraer_busqueda(texto):
     return q.strip(" .?!,")
 
 
-def ollama(modelo, sistema, usuario, formato=None):
-    cuerpo = {"model": modelo, "stream": False, "keep_alive": KEEP_ALIVE,
-              "options": {"temperature": 0, "num_ctx": NUM_CTX},
-              "messages": [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]}
-    if formato:
-        cuerpo["format"] = formato
-    req = urllib.request.Request(OLLAMA, json.dumps(cuerpo).encode(), {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.load(r)["message"]["content"]
+class SinLLM(Exception):
+    """llm = "ninguno": la acción necesita un modelo de lenguaje y no hay."""
 
 
-def ollama_stream(modelo, sistema, usuario):
-    """Genera la respuesta de Ollama oración por oración para poder hablar sin esperar al final."""
-    cuerpo = {"model": modelo, "stream": True, "keep_alive": KEEP_ALIVE,
-              "options": {"temperature": 0, "num_ctx": NUM_CTX},
-              "messages": [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]}
-    req = urllib.request.Request(OLLAMA, json.dumps(cuerpo).encode(), {"Content-Type": "application/json"})
-    buf = ""
-    with urllib.request.urlopen(req, timeout=120) as r:
-        for linea in r:
-            if not linea.strip():
-                continue
+def _peticion_llm(modelo, sistema, usuario, formato=None, stream=False):
+    """Abre la petición al proveedor configurado y devuelve la respuesta HTTP."""
+    mensajes = [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]
+    if LLM == "ollama":
+        url = f"{LLM_URL}/api/chat"
+        cuerpo = {"model": modelo, "stream": stream, "keep_alive": KEEP_ALIVE,
+                  "options": {"temperature": 0, "num_ctx": NUM_CTX}, "messages": mensajes}
+        if formato:
+            cuerpo["format"] = formato
+    elif LLM == "openai":
+        url = f"{LLM_URL}/chat/completions"
+        cuerpo = {"model": modelo, "stream": stream, "temperature": 0, "messages": mensajes}
+        if formato:
+            cuerpo["response_format"] = {"type": "json_schema",
+                                         "json_schema": {"name": "respuesta", "schema": formato, "strict": True}}
+    else:
+        raise SinLLM()
+    cabeceras = {"Content-Type": "application/json"}
+    if LLM_CLAVE:
+        cabeceras["Authorization"] = f"Bearer {LLM_CLAVE}"
+    req = urllib.request.Request(url, json.dumps(cuerpo).encode(), cabeceras)
+    return urllib.request.urlopen(req, timeout=120)
+
+
+def llm(modelo, sistema, usuario, formato=None):
+    with _peticion_llm(modelo, sistema, usuario, formato) as r:
+        datos = json.load(r)
+    return datos["message"]["content"] if LLM == "ollama" else datos["choices"][0]["message"]["content"]
+
+
+def _fragmentos_stream(r):
+    """Texto que va llegando: líneas JSON en Ollama, eventos SSE («data: …») en la API de OpenAI."""
+    for linea in r:
+        linea = linea.decode().strip()
+        if not linea:
+            continue
+        if LLM == "ollama":
             item = json.loads(linea)
-            buf += item.get("message", {}).get("content", "")
+            yield item.get("message", {}).get("content", "")
+            if item.get("done"):
+                return
+        elif linea.startswith("data:"):
+            dato = linea[5:].strip()
+            if dato == "[DONE]":
+                return
+            opciones = json.loads(dato).get("choices") or [{}]
+            yield (opciones[0].get("delta") or {}).get("content") or ""
+
+
+def llm_stream(modelo, sistema, usuario):
+    """Genera la respuesta del LLM oración por oración para poder hablar sin esperar al final."""
+    buf = ""
+    with _peticion_llm(modelo, sistema, usuario, stream=True) as r:
+        for fragmento in _fragmentos_stream(r):
+            buf += fragmento
             while m := re.search(r"([.!?]+(?=\s)|\n+)", buf):
                 fin = m.end()
                 oracion, buf = buf[:fin].strip(), buf[fin:].lstrip()
                 if oracion:
                     yield oracion
-            if item.get("done"):
-                break
     if buf.strip():
         yield buf.strip()
 
@@ -1926,11 +1977,13 @@ def interpretar(texto):
         if app := app_en(m.group(2)):
             return "cerrar_app", app
     try:
-        r = json.loads(ollama(MODELO_COMANDOS, PROMPT_COMANDOS, texto, ESQUEMA))
+        r = json.loads(llm(MODELO_COMANDOS, PROMPT_COMANDOS, texto, ESQUEMA))
         accion, param = r.get("accion", "no_entendido"), r.get("parametro", "")
+    except SinLLM:
+        return "no_entendido", ""
     except Exception as e:
-        log(f"error de Ollama: {e}")
-        return "error_ollama", ""
+        log(f"error del LLM ({LLM}): {e}")
+        return "error_llm", ""
     # El modelo tiende a adivinar: solo se acepta la acción si la frase contiene palabras que la respalden
     evidencia = EVIDENCIA.get(accion)
     if evidencia and not re.search(evidencia, n):
@@ -1972,8 +2025,8 @@ def interpretar(texto):
 def ejecutar(accion, param, lang):
     """Devuelve el texto de respuesta en el idioma indicado."""
     m = MSG[lang]
-    if accion == "error_ollama":
-        return m["ollama_error"]
+    if accion == "error_llm":
+        return m["llm_error"]
     fn = EJECUTORES.get(accion)
     return fn(param, lang, m) if fn else m["no_entendi"]
 
@@ -2129,8 +2182,10 @@ class Asistente:
                   segundos=4, transitoria=True)
 
     def precargar_llm(self):
+        if LLM == "ninguno":
+            return
         try:
-            ollama(MODELO_COMANDOS, "Responde ok.", "ok")
+            llm(MODELO_COMANDOS, "Responde ok.", "ok")
         except Exception as e:
             log(f"no se pudo precargar {MODELO_COMANDOS}: {e}")
 
@@ -2198,7 +2253,7 @@ class Asistente:
             m = MSG[lang]
             notificar(m["pensando"], param, "dialog-question", segundos=15)
             try:
-                oraciones = ollama_stream(MODELO_PREGUNTAS, m["responde"], param)
+                oraciones = llm_stream(MODELO_PREGUNTAS, m["responde"], param)
                 primera = [True]
 
                 def avance(parcial):
@@ -2211,15 +2266,18 @@ class Asistente:
                 if not respuesta:
                     notificar(f"«{texto}»", m["no_entendi"], "dialog-warning", segundos=5)
             except Exception as e:
-                log(f"error en pregunta en streaming: {e}")
+                clave_msg = "sin_llm" if isinstance(e, SinLLM) else "llm_error"
+                log(f"pregunta sin respuesta: {'llm = ninguno' if isinstance(e, SinLLM) else e}")
                 sonido("fallo")
-                notificar(f"«{texto}»", m["ollama_error"], "dialog-warning", segundos=5)
-                self.voz.decir(m["ollama_error"], lang)
+                notificar(f"«{texto}»", m[clave_msg], "dialog-warning", segundos=5)
+                self.voz.decir(m[clave_msg], lang)
             return
 
         try:
             respuesta = ejecutar(accion, param, lang)
-            ok = accion not in ("no_entendido", "error_ollama")
+            ok = accion not in ("no_entendido", "error_llm")
+        except SinLLM:
+            respuesta, ok = MSG[lang]["sin_llm"], False
         except Exception as e:
             log(f"error ejecutando {accion}: {e}")
             respuesta, ok = MSG[lang]["fallo"], False

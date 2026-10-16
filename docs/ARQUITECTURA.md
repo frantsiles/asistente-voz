@@ -67,7 +67,7 @@ Dos motores con la misma interfaz `transcribir(audio, pista) -> (texto, idioma)`
 2. **Reglas especiales** escritas en `interpretar()`, que necesitan extraer partes de la frase: dictado, temporizador (`numeros_en_cifras()` convierte «cinco minutos» → «5 minutos»), puerto, git, terminal en un proyecto, logs y reinicio de contenedores.
 3. **`REGLAS`**: las regex de cada acción del `REGISTRO_ACCIONES`, **en el orden del registro**.
 4. **Reglas de respaldo**: volumen o brillo con número, escritorio N, búsqueda web, tareas, «abre el proyecto X», «abre X», «cierra X».
-5. **Ollama** (`MODELO_COMANDOS`) con `PROMPT_COMANDOS` y un esquema JSON (`ESQUEMA`) que limita la acción a los nombres del registro.
+5. **LLM** (`MODELO_COMANDOS`) con `PROMPT_COMANDOS` y un esquema JSON (`ESQUEMA`) que limita la acción a los nombres del registro. `llm()` y `llm_stream()` hablan con el proveedor de `LLM`: la API nativa de Ollama o la compatible con OpenAI (`format` o `response_format` para el esquema; líneas JSON o eventos SSE en streaming). Con `LLM = "ninguno"` lanzan `SinLLM`: la frase queda en `no_entendido` y las preguntas avisan al usuario.
 
 La respuesta del LLM pasa por dos filtros:
 
@@ -108,7 +108,7 @@ stateDiagram-v2
 ### Respuestas habladas
 
 - `Voz.decir()` sintetiza la frase completa con Piper y la reproduce con `pw-play`.
-- `Voz.decir_stream()` se usa para las preguntas: `ollama_stream()` entrega oraciones mientras el modelo genera, un hilo las sintetiza y el principal las reproduce. Rota 3 archivos WAV con una cola de 1, para no sobrescribir el que está sonando. Si se interrumpe, una señal propia de esa respuesta (`_cancelar_stream`) detiene al hilo aunque siga esperando a Ollama. Los errores del hilo (Ollama caído) se relanzan en el principal.
+- `Voz.decir_stream()` se usa para las preguntas: `llm_stream()` entrega oraciones mientras el modelo genera, un hilo las sintetiza y el principal las reproduce. Rota 3 archivos WAV con una cola de 1, para no sobrescribir el que está sonando. Si se interrumpe, una señal propia de esa respuesta (`_cancelar_stream`) detiene al hilo aunque siga esperando a Ollama. Los errores del hilo (Ollama caído) se relanzan en el principal.
 - Un `threading.Lock` evita que el aviso de un temporizador y una respuesta hablen a la vez.
 
 ## Archivos en disco
@@ -130,4 +130,4 @@ stateDiagram-v2
 3. **Parámetros validados** contra lo que existe (apps, atajos, tareas, contenedores, proyectos).
 4. **Confirmación por voz** para las acciones de `CONFIRMAR`.
 5. **Contraseñas fuera**: `sudo` se escribe en una terminal visible (el asistente nunca la ve), y «lee lo que copié» no lee nada que parezca una contraseña (`parece_secreto()`).
-6. **Sin red**, salvo la descarga inicial de modelos: Whisper, Ollama y Piper corren en local.
+6. **Sin red**, salvo la descarga inicial de modelos: Whisper, el LLM y Piper corren en local. Si `llm_url` apunta fuera del equipo, `validar_config()` lo avisa al arrancar.

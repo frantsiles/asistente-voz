@@ -107,7 +107,7 @@ Ejecuta las dos variantes:
 
 ```bash
 venv/bin/python pruebas/test_frases.py            # reglas y salvaguardas, sin LLM (rápido)
-venv/bin/python pruebas/test_frases.py --con-llm  # también por Ollama: el LLM real no debe saltarse la evidencia
+venv/bin/python pruebas/test_frases.py --con-llm  # también por el LLM configurado: el LLM real no debe saltarse la evidencia
 ```
 
 Las dos tienen que terminar en `0 fallos`.

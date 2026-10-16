@@ -5,6 +5,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 ## Sin publicar
 
 ### Añadido
+- **Proveedor de LLM configurable** (`llm`): `ollama` (API nativa, por defecto), `openai` (cualquier servidor compatible: llama.cpp, LM Studio, LocalAI, vLLM, OpenVINO Model Server) o `ninguno` (solo reglas, para equipos con pocos recursos). `llm_url` y `llm_clave_env` (la clave se lee de una variable de entorno, nunca de `config.json`). Aviso al arrancar si el LLM está fuera del equipo.
 - **Un sonido por estado** (`SONIDO_ESTADO`): escuchando, procesando, éxito, fallo, no escuché y ocupado. Al dejar de grabar la notificación pasa a «Procesando…»; antes seguía diciendo «Escuchando…» durante la transcripción.
 - Con la palabra de activación, aviso visual en cuanto el filtro cree oír el nombre («¿Hades? Te escucho…»); suena solo cuando se confirma, para no sonar con cada falso candidato en una reunión. Si no era el nombre, la notificación se cierra.
 - **Ninguna interacción termina en silencio**: «no escuché», «no entendí» y la confirmación sin respuesta suenan, lo explican y quedan en el log.

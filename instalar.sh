@@ -44,8 +44,11 @@ if [ -z "${MOTOR:-}" ]; then
 fi
 echo "    Whisper: $([ "$MOTOR" = nvidia ] && echo 'faster-whisper en GPU NVIDIA' || echo 'OpenVINO (GPU Intel / CPU)')"
 
+# Proveedor del LLM en config.json (por defecto ollama): solo con Ollama se exige el comando
+LLM_CFG="$(grep -o '"llm" *: *"[a-z]*"' "$DIR/config.json" 2>/dev/null | grep -o '[a-z]*"$' | tr -d '"' || true)"
+LLM_CFG="${LLM_CFG:-ollama}"
 faltan=()
-for c in pw-record pw-play wpctl notify-send kioclient busctl ollama; do
+for c in pw-record pw-play wpctl notify-send kioclient busctl $([ "$LLM_CFG" = ollama ] && echo ollama); do
     command -v "$c" >/dev/null || faltan+=("$(paquete "$c")")
 done
 if [ ${#faltan[@]} -gt 0 ]; then
@@ -121,7 +124,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now asistente-voz.service
 systemctl --user restart asistente-voz.service
 
-if ! curl -s -m 2 http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+if [ "$LLM_CFG" = ollama ] && ! curl -s -m 2 http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
     echo
     echo "AVISO: Ollama no responde. Arráncalo con: sudo systemctl enable --now ollama"
 fi

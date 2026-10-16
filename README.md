@@ -11,7 +11,7 @@ flowchart LR
     B --> C[Whisper<br/>OpenVINO · Intel GPU/CPU<br/>faster-whisper · NVIDIA]
     C --> D{¿Regla rápida?}
     D -- sí --> F[Acción de la lista blanca]
-    D -- no --> E[llama3.2<br/>Ollama · salida JSON]
+    D -- no --> E[LLM · salida JSON<br/>Ollama, llama.cpp, LM Studio…]
     E --> V[Validación por palabras clave] --> F
     F --> G[Notificación de KDE<br/>+ voz con Piper]
 ```
@@ -44,7 +44,7 @@ flowchart LR
 | "Pausa la música" / "Pon música" / "Siguiente canción" | "Pause" / "Play some music" / "Next song" | Reproductor vía MPRIS (abre Spotify si no hay ninguno) |
 | "Sube el brillo" / "Activa la luz nocturna" | "Brightness up" / "Turn off night light" | Brillo (PowerDevil) y luz nocturna de KWin |
 | "Avísame en cinco minutos que saque la ropa" | "Set a timer for 10 minutes" | Temporizador con notificación y voz |
-| "Lee / resume / traduce lo que copié" | "Summarize the clipboard" | Portapapeles de Klipper + Ollama (no lee contraseñas en voz alta) |
+| "Lee / resume / traduce lo que copié" | "Summarize the clipboard" | Portapapeles de Klipper + LLM (no lee contraseñas en voz alta) |
 | "Escribe hola mundo" | "Type hello world" | Copia el texto dictado al portapapeles para pegarlo con Ctrl+V |
 | "¿Dónde está mi teléfono?" / "Batería del teléfono" | "Ring my phone" | KDE Connect |
 | "¿Cómo está la compu?" / "Estado de la batería" | "How is the computer doing?" | Temperatura de CPU y GPU, RAM, disco, batería, red y perfil de energía |
@@ -86,10 +86,7 @@ Las acciones de la lista `confirmar` preguntan antes («¿Confirmas detener los 
 
 - Linux con **KDE Plasma 6** y **PipeWire**. Probado en **Fedora 44** y **Arch Linux**.
 - **Python 3.13**. Las ruedas de OpenVINO y CTranslate2 no siempre están disponibles para la versión más reciente de Python (Arch ya trae 3.14). Si no tienes `python3.13`, el instalador lo descarga con [`uv`](https://docs.astral.sh/uv/) (`sudo pacman -S uv`).
-- **[Ollama](https://ollama.com)** con el modelo `llama3.2`:
-  ```bash
-  ollama pull llama3.2
-  ```
+- Un **modelo de lenguaje** local. Por defecto **[Ollama](https://ollama.com)** con `llama3.2` (`ollama pull llama3.2`); también sirve cualquier servidor compatible con la API de OpenAI, o ninguno (ver [Modelo de lenguaje](#modelo-de-lenguaje)).
 
 Paquetes del sistema:
 
@@ -137,7 +134,10 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `alias_apps` | `{}` | Nombres extra → id del `.desktop`, p. ej. `{"mongo": "com.mongodb.Compass"}` |
 | `tareas` | `{}` | Comandos que se pueden ejecutar por voz, p. ej. `{"tests de validaciones": "dotnet test ~/Proyectos/Validaciones"}`. Nada fuera de esta lista |
 | `confirmar` | `["docker_detener", "docker_reiniciar"]` | Acciones que piden confirmación por voz antes de ejecutarse |
-| `modelo_comandos` | `llama3.2` | Modelo de Ollama que interpreta los comandos |
+| `llm` | `ollama` | Proveedor del modelo de lenguaje: `ollama`, `openai` (cualquier servidor compatible) o `ninguno` |
+| `llm_url` | según `llm` | `http://127.0.0.1:11434` (Ollama) o `http://127.0.0.1:8080/v1` (llama-server) |
+| `llm_clave_env` | — | Nombre de la variable de entorno con la clave de la API, si el servidor la pide. La clave nunca va en `config.json` |
+| `modelo_comandos` | `llama3.2` | Modelo que interpreta los comandos que no cubren las reglas |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
 | `idiomas` | `["es", "en"]` | Idiomas que puede detectar Whisper (solo NVIDIA). Evita que el ruido se transcriba como árabe u otros idiomas |
@@ -149,6 +149,27 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `palabra_activacion` | `""` | Frase que activa el asistente, p. ej. `"hades"`. `""` = solo atajo |
 | `variantes_activacion` | `oye …`, `hey …` | Otras formas aceptadas |
 | `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
+
+### Modelo de lenguaje
+
+Las reglas resuelven la mayoría de los comandos sin modelo (en `pruebas/frases.json`, 93 de 105 frases). El LLM se usa para las frases ambiguas, las preguntas y el portapapeles. Se puede elegir:
+
+| `llm` | Para qué |
+|---|---|
+| `ollama` (por defecto) | Ollama con su API nativa. **Si usas Ollama, usa este modo y no `openai` con su `/v1`**: el `/v1` no envía `num_ctx` ni `keep_alive`, así que Ollama recarga el modelo al alternar (~16 s) y lo descarga a los 5 minutos |
+| `openai` | Cualquier servidor compatible con la API de OpenAI: [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`), LM Studio, LocalAI, vLLM, OpenVINO Model Server. Los comandos usan `response_format` con esquema JSON |
+| `ninguno` | Sin LLM, para equipos con pocos recursos: solo reglas. Las frases ambiguas responden «no te entendí», y las preguntas y el portapapeles (salvo «léelo») avisan de que no hay modelo |
+
+`modelo_comandos` y `modelo_preguntas` pueden ser distintos: uno pequeño para comandos (solo elige una acción) y otro mayor para preguntas. Por ejemplo, con llama-server:
+
+```json
+"llm": "openai",
+"llm_url": "http://127.0.0.1:8080/v1",
+"modelo_comandos": "qwen3.5-2b",
+"modelo_preguntas": "qwen3.5-2b"
+```
+
+Un servidor fuera de tu equipo (`llm_url` remota) funciona, pero las frases y preguntas salen por la red; el asistente lo avisa al arrancar.
 
 Después de cambiar algo:
 
@@ -180,7 +201,7 @@ Cada comando se registra así: `«texto» [idioma] -> acción(parámetro) [voz 1
 
 ```bash
 venv/bin/python pruebas/test_frases.py            # sin LLM: solo reglas y salvaguardas
-venv/bin/python pruebas/test_frases.py --con-llm  # pasa también por Ollama
+venv/bin/python pruebas/test_frases.py --con-llm  # pasa también por el LLM configurado
 ```
 
 `pruebas/frases.json` guarda frase → acción esperada, incluidas transcripciones reales con errores («Aure, Fire, Firefox»). Cuando una frase falle, añádela ahí.
