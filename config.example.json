@@ -9,6 +9,7 @@
   "alias_apps": {"mongo": "com.mongodb.Compass"},
   "tareas": {},
   "confirmar": ["docker_detener", "docker_reiniciar"],
+  "clasificador": true,
   "llm": "ollama",
   "llm_url": null,
   "modelo_comandos": "llama3.2",

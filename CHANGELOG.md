@@ -5,6 +5,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 ## Sin publicar
 
 ### Añadido
+- **Intérprete por capas**: reglas → **clasificador por embeddings** (multilingual-e5-small, ONNX int8, ~3 ms en CPU) → LLM solo si el clasificador duda. Con 36 frases que las reglas no cubren: de 6/20 órdenes y 5,5 s a 17/19 y 3 ms de mediana, rechazando 16/16 frases de charla real de reuniones. Ejemplos por acción en el registro (`ejemplos`) y de charla (`EJEMPLOS_CHARLA`). `clasificador` y `umbral_clasificador` en `config.json`.
+- **Prompt con ejemplos y contexto de micrófono abierto**: sin ellos ningún modelo probado respondía `no_entendido` ante charla (0/16); con ellos, gemma4:e2b rechaza 15/16.
+
+### Cambiado
+- La salvaguarda de evidencia solo se aplica a las acciones con `riesgo` (bloquear, cerrar, volumen, brillo, ventanas, Docker, tareas, teléfono, actualizar): en las demás descartaba órdenes válidas. Abrir o cerrar una app exige que se mencione en la frase.
 - **Proveedor de LLM configurable** (`llm`): `ollama` (API nativa, por defecto), `openai` (cualquier servidor compatible: llama.cpp, LM Studio, LocalAI, vLLM, OpenVINO Model Server) o `ninguno` (solo reglas, para equipos con pocos recursos). `llm_url` y `llm_clave_env` (la clave se lee de una variable de entorno, nunca de `config.json`). Aviso al arrancar si el LLM está fuera del equipo.
 - **Un sonido por estado** (`SONIDO_ESTADO`): escuchando, procesando, éxito, fallo, no escuché y ocupado. Al dejar de grabar la notificación pasa a «Procesando…»; antes seguía diciendo «Escuchando…» durante la transcripción.
 - Con la palabra de activación, aviso visual en cuanto el filtro cree oír el nombre («¿Hades? Te escucho…»); suena solo cuando se confirma, para no sonar con cada falso candidato en una reunión. Si no era el nombre, la notificación se cierra.
@@ -16,6 +21,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
 
 ### Corregido
+- «Cierra y» (frase cortada) cerraba la ventana actual.
+- «Escritorio dos» no se entendía: solo «escritorio 2».
 - Con modelos de razonamiento (Qwen 3.5, Gemma 4) Ollama «pensaba» minutos antes de contestar y la petición caducaba: ahora se envía `think: false`.
 - Pulsar el atajo mientras el servicio arrancaba lo mataba (`SIGUSR1` sin manejador durante la carga de los modelos). Ahora avisa «Arrancando…» y escucha en cuanto está listo.
 - `notify-send` sin timeout podía bloquear el asistente si el servidor de notificaciones no respondía.

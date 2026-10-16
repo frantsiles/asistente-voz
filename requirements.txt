@@ -1,3 +1,5 @@
 piper-tts==1.8.0
 numpy==2.5.4
 huggingface_hub==2.2.0
+# Clasificador de comandos por embeddings (onnxruntime ya viene con piper-tts)
+tokenizers==0.23.3

@@ -69,7 +69,8 @@ CFG = _cargar_config()
 CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps", "tareas", "confirmar",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
               "whisper_precision", "comando_actualizar", "hablar", "nombre", "palabra_activacion",
-              "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env"}
+              "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env", "clasificador",
+              "umbral_clasificador"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
 WHISPER_MOTOR = CFG.get("whisper", "auto")
@@ -97,6 +98,9 @@ LLM_URL = (CFG.get("llm_url") or {"ollama": "http://127.0.0.1:11434", "openai": 
            .get(LLM, "")).rstrip("/")
 # La clave nunca va en config.json: se indica el nombre de la variable de entorno que la contiene
 LLM_CLAVE = os.environ.get(CFG["llm_clave_env"], "") if CFG.get("llm_clave_env") else ""
+# Clasificador por embeddings entre las reglas y el LLM (ver ClasificadorComandos)
+USAR_CLASIFICADOR = CFG.get("clasificador", True)
+UMBRAL_CLASIFICADOR = CFG.get("umbral_clasificador", 0.86)   # más alto = duda más y pregunta más al LLM
 MODELO_COMANDOS = CFG.get("modelo_comandos", "llama3.2")
 MODELO_PREGUNTAS = CFG.get("modelo_preguntas", "llama3.2")  # uno más grande responde mejor, pero carga más lento
 NUM_CTX = 4096                 # igual para ambos usos, así Ollama no recarga el modelo
@@ -1493,23 +1497,40 @@ def _ej_pregunta(param, _lang, m):
 
 
 # --- Tabla declarativa de acciones e interpretación --------------------------------
+PARAM_APP = "<app>"   # en los ejemplos: el parámetro es una app que se busca en la frase
+
+
 class DefinicionAccion(NamedTuple):
     nombre: str
     prompt: str
     evidencia: str | None = None
     reglas: tuple[tuple[str, str | None], ...] = ()
     ejecutor: object = None
+    # Con riesgo: deshacerla molesta (bloquear, cerrar, detener…). Lo que propongan el clasificador o el LLM
+    # solo se acepta si la frase cumple `evidencia`. En las demás, la evidencia descartaba órdenes válidas
+    # («necesito el navegador», «what's eating my cpu»).
+    riesgo: bool = False
+    # (frase, parámetro) para el clasificador por embeddings. PARAM_APP = buscar la app en la frase
+    ejemplos: tuple[tuple[str, str], ...] = ()
 
 
 REGISTRO_ACCIONES = [
     DefinicionAccion(
         nombre="abrir_app",
+        ejemplos=(("abre firefox", PARAM_APP), ("lanza spotify", PARAM_APP),
+                  ("pon el editor de código", PARAM_APP), ("quiero usar la calculadora", PARAM_APP),
+                  ("ábreme la consola", PARAM_APP), ("open the file manager", PARAM_APP),
+                  ("start chrome", PARAM_APP), ("trae el explorador de archivos", PARAM_APP)),
         prompt="abrir una aplicación (open/launch). parametro = nombre de la app tal como lo dijo (ej: firefox, vscode, kitty, compass, htop, terminal, calculadora)",
         evidencia=r"\b(abr|lanz|inici|ejecut|muestr|mostr|open|launch|start|run|show)\w*",
         ejecutor=_ej_abrir_app,
     ),
     DefinicionAccion(
         nombre="cerrar_app",
+        riesgo=True,
+        ejemplos=(("cierra spotify", PARAM_APP), ("quita firefox", PARAM_APP), ("close the calculator", PARAM_APP),
+                  ("mata el reproductor", PARAM_APP), ("cierra esto", ""), ("cierra la ventana", ""),
+                  ("close this window", ""), ("quítame esto de la pantalla", "")),
         prompt='cerrar una aplicación o la ventana actual (close/quit). parametro = nombre de la app tal como lo dijo, o "" si dice "la ventana" / "the window"',
         evidencia=r"\b(cierr|cerr|close|quit)\w*",
         ejecutor=_ej_cerrar_app,
@@ -1534,12 +1555,18 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="ejecutar_tarea",
+        riesgo=True,
         prompt="ejecutar una tarea configurada (run task). parametro = nombre de la tarea tal como lo dijo",
         evidencia=r"\b(ejecut|corr|lanz|inici|tarea|run|start|task)\w*",
         ejecutor=_ej_ejecutar_tarea,
     ),
     DefinicionAccion(
         nombre="ventana",
+        riesgo=True,
+        ejemplos=(("maximiza la ventana", "maximizar"), ("maximize this window", "maximizar"),
+                  ("minimiza la ventana", "minimizar"), ("minimize this window", "minimizar"),
+                  ("esconde esta ventana", "minimizar"), ("muestra el escritorio", "mostrar_escritorio"),
+                  ("show desktop", "mostrar_escritorio")),
         prompt="gestionar la ventana actual o cambiar de escritorio. parametro = maximizar | minimizar | pantalla_completa | izquierda | derecha | otra_pantalla | mostrar_escritorio | siguiente_escritorio | escritorio_anterior | escritorio_1..9 | mover_escritorio_1..9",
         evidencia=(r"maximiz|minimiz|pantalla completa|full\s*screen|ventana|window|escritorio|desktop|otra pantalla"
                    r"|otro monitor|next screen|other screen|izquierda|left|derecha|right"),
@@ -1558,6 +1585,9 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="portapapeles",
+        ejemplos=(("explica lo que copié", "explicar"), ("explain the clipboard", "explicar"),
+                  ("resume lo que copié", "resumir"), ("summarize the clipboard", "resumir"),
+                  ("traduce lo que copié", "traducir"), ("translate the clipboard", "traducir")),
         prompt="usar el texto copiado en el portapapeles (clipboard). parametro = leer | resumir | traducir | explicar",
         evidencia=r"portapapeles|clipboard|copi\w*|copied",
         reglas=(
@@ -1576,8 +1606,12 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="brillo",
+        riesgo=True,
+        ejemplos=(("sube el brillo", "subir"), ("más brillo", "subir"), ("brightness up", "subir"),
+                  ("pon la pantalla más clara", "subir"), ("la pantalla brilla demasiado", "bajar"),
+                  ("baja el brillo", "bajar"), ("menos brillo", "bajar"), ("brightness down", "bajar")),
         prompt="ajustar el brillo de pantalla o la luz nocturna (brightness/night light). parametro = subir | bajar | 0..100 | luz_nocturna | luz_nocturna_on | luz_nocturna_off",
-        evidencia=r"brillo|brightness|luz nocturna|modo nocturno|night light|night color",
+        evidencia=r"brillo|brightness|luz nocturna|modo nocturno|night light|night color|pantalla\b.*\b(oscur|clar|brill)|screen\b.*\b(dark|bright|dim)",
         reglas=(
             (r"\b(sube|subir|aumenta)\w* (el )?brillo|\b(increase|turn up|raise) (the )?brightness|\bbrightness up\b", "subir"),
             (r"\b(baja|bajar|disminu)\w* (el )?brillo|\b(decrease|turn down|lower) (the )?brightness|\bbrightness down\b", "bajar"),
@@ -1589,6 +1623,9 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="telefono",
+        riesgo=True,
+        ejemplos=(("haz sonar el teléfono", "sonar"), ("ring my phone", "sonar"), ("dónde está mi móvil", "sonar"),
+                  ("batería del teléfono", "bateria"), ("phone battery", "bateria")),
         prompt="usar KDE Connect con el teléfono (ring phone, phone battery, send clipboard). parametro = sonar | bateria | portapapeles",
         evidencia=r"telefono|celular|movil|phone",
         reglas=(
@@ -1606,6 +1643,9 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="docker_estado",
+        ejemplos=(("qué contenedores están corriendo", ""), ("lista los contenedores", ""),
+                  ("which containers are running", ""), ("cómo están mis contenedores de docker", ""),
+                  ("estado de docker", "")),
         prompt='qué contenedores están corriendo (which containers are running). parametro = ""',
         evidencia=r"contenedor|container|docker",
         reglas=((r"\b(estado de docker|que contenedores (estan|hay)|which containers are running|docker status)\b", ""),),
@@ -1613,6 +1653,9 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="docker_levantar",
+        riesgo=True,
+        ejemplos=(("levanta los contenedores", ""), ("inicia docker compose", ""), ("start the containers", ""),
+                  ("sube el entorno de docker", "")),
         prompt='levantar/iniciar los contenedores (start containers). parametro = ""',
         evidencia=r"\b(levant|inici|arranc|sub|enciend|corre|start|run|bring|spin)\w*.*(contenedor|container|docker)",
         reglas=((r"\b(levanta|inicia|arranca|sube|start|bring up)\w*\s+(los\s+|the\s+)?(contenedores|containers|docker)\b", ""),),
@@ -1620,6 +1663,9 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="docker_detener",
+        riesgo=True,
+        ejemplos=(("detén los contenedores", ""), ("para docker compose", ""), ("stop the containers", ""),
+                  ("baja el entorno de docker", "")),
         prompt='detener/parar los contenedores (stop containers). parametro = ""',
         evidencia=r"\b(deten|det|par|apag|baj|stop|shut|kill)\w*.*(contenedor|container|docker)",
         reglas=((r"\b(deten|detener|para|parar|apaga|baja|stop)\w*\s+(los\s+|the\s+)?(contenedores|containers|docker)\b", ""),),
@@ -1633,12 +1679,19 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="docker_reiniciar",
+        riesgo=True,
         prompt="reiniciar un contenedor (restart container). parametro = nombre del contenedor",
         evidencia=r"\b(reinici|restart)\w*.*\b(contenedor|container|docker)",
         ejecutor=_ej_docker_reiniciar,
     ),
     DefinicionAccion(
         nombre="diagnostico",
+        ejemplos=(("qué proceso usa más cpu", "cpu"), ("which process uses the most cpu", "cpu"),
+                  ("qué está consumiendo procesador", "cpu"), ("qué proceso usa más memoria", "memoria"),
+                  ("which app uses the most ram", "memoria"), ("qué consume tanta ram", "memoria"),
+                  ("hay actualizaciones pendientes", "actualizaciones"),
+                  ("are there updates available", "actualizaciones"), ("qué puertos están abiertos", "puertos"),
+                  ("list open ports", "puertos")),
         prompt="ver qué consume CPU/memoria, qué puertos están abiertos o cuántas actualizaciones hay. parametro = cpu | memoria | puertos | puerto:<numero> | actualizaciones",
         evidencia=r"consum|usando|using|puerto|port|actualizacion|update|proceso|process",
         reglas=(
@@ -1651,6 +1704,12 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="volumen",
+        riesgo=True,
+        ejemplos=(("sube el volumen", "subir"), ("más volumen", "subir"), ("turn it up", "subir"),
+                  ("súbele al sonido", "subir"), ("no se oye nada, sube", "subir"), ("baja el volumen", "bajar"),
+                  ("menos volumen", "bajar"), ("turn the volume down", "bajar"),
+                  ("está muy fuerte el audio", "bajar"), ("silencia el audio", "silenciar"), ("mute", "silenciar"),
+                  ("quita el sonido", "silenciar")),
         prompt="parametro = subir | bajar | silenciar | activar | un número 0-100",
         evidencia=r"volumen|volume|sonido|sound|silenci|mute",
         reglas=(
@@ -1662,6 +1721,11 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="multimedia",
+        ejemplos=(("pausa la música", "pausa"), ("pause", "pausa"), ("detén la canción", "pausa"),
+                  ("para el reproductor", "pausa"), ("reanuda la música", "reproducir"), ("play", "reproducir"),
+                  ("continúa la canción", "reproducir"), ("siguiente canción", "siguiente"),
+                  ("next song", "siguiente"), ("salta esta canción", "siguiente"),
+                  ("canción anterior", "anterior"), ("previous track", "anterior")),
         prompt="parametro = pausa | reproducir | siguiente | anterior",
         evidencia=r"musica|music|cancion|song|pausa|pause|reproduc|play|tema|track|siguiente|next|anterior|previous",
         reglas=(
@@ -1674,6 +1738,8 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="estado_sistema",
+        ejemplos=(("cómo está la compu", ""), ("estado del sistema", ""), ("how is the computer doing", ""),
+                  ("cuánta temperatura tiene la cpu", ""), ("cuánta batería queda", "")),
         prompt='temperatura, memoria, disco, GPU, batería, cómo está el PC (system status). parametro = ""',
         evidencia=(r"temperatura|temperature|memoria|memory|disco|disk|estado|status|como esta|how is|ram|cpu"
                    r"|procesador|compu|computer|equipo|system|bateria|battery|vram|gpu|grafica"),
@@ -1686,6 +1752,10 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="perfil_energia",
+        ejemplos=(("modo rendimiento", "rendimiento"), ("performance mode", "rendimiento"),
+                  ("modo ahorro de energía", "ahorro"), ("power saver mode", "ahorro"),
+                  ("ahorra batería", "ahorro"), ("modo equilibrado", "equilibrado"),
+                  ("balanced mode", "equilibrado")),
         prompt="parametro = rendimiento | equilibrado | ahorro",
         evidencia=r"rendimiento|performance|equilibrad|balanced|ahorro|saver|perfil|profile|energia|power|modo|mode",
         reglas=(
@@ -1703,6 +1773,9 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="bloquear_pantalla",
+        riesgo=True,
+        ejemplos=(("bloquea la pantalla", ""), ("bloquea la sesión", ""), ("lock the screen", ""),
+                  ("voy a salir, bloquea el equipo", "")),
         prompt='parametro = ""',
         evidencia=r"bloque|lock",
         reglas=((r"\bbloquea\w* (la )?(pantalla|sesion|compu|pc)|\block (the )?(screen|computer|pc|session)", ""),),
@@ -1710,6 +1783,7 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="actualizar_sistema",
+        riesgo=True,
         prompt='actualizar el sistema, los paquetes o todo (update/upgrade the system). parametro = ""',
         evidencia=r"actualiz|update|upgrade",
         reglas=((r"^(?!\W*(como|how|que|what|por que|why|cual)\b).*\b(actualiza\w*|update|upgrade)\b.*\b(todo|sistema|paquetes|equipo|compu|pc|everything|system|packages|computer)\b", ""),),
@@ -1733,19 +1807,152 @@ REGISTRO_ACCIONES = [
 ]
 
 ACCIONES = [a.nombre for a in REGISTRO_ACCIONES]
+# Ejemplos para el LLM. Incluyen charla: sin ellos ningún modelo probado respondía no_entendido ante
+# frases de una reunión (0 de 16); con ellos, gemma4:e2b rechaza 15 de 16
+EJEMPLOS_PROMPT = [
+    ("lanza el editor de código", "abrir_app", "vscode"),
+    ("cierra spotify", "cerrar_app", "spotify"),
+    ("súbele al volumen", "volumen", "subir"),
+    ("silencia todo", "volumen", "silenciar"),
+    ("ya me voy, bloquea la sesión", "bloquear_pantalla", ""),
+    ("¿qué contenedores hay levantados?", "docker_estado", ""),
+    ("¿qué está usando tanto procesador?", "diagnostico", "cpu"),
+    ("next track", "multimedia", "siguiente"),
+    ("make the screen brighter", "brillo", "subir"),
+    ("sí, eso lo vemos mañana en la reunión", "no_entendido", ""),
+    ("no, pero el cliente dijo que lo quería para el viernes", "no_entendido", ""),
+    ("okay, thanks everyone", "no_entendido", ""),
+    ("la verdad es que el sistema anda lento hoy", "no_entendido", ""),
+]
 PROMPT_COMANDOS = (
-    "Eres el intérprete de comandos de voz de un PC de desarrollo. La frase puede estar en español o en inglés.\n"
-    "Convierte la frase en UNA acción. Los valores fijos de parametro van SIEMPRE en español, tal como aparecen aquí.\n"
+    "Eres el intérprete de comandos de voz de un PC de desarrollo. La frase viene de un micrófono que puede estar "
+    "abierto: muchas veces es una conversación con otras personas, una reunión o ruido mal transcrito. "
+    "Solo es una orden si le pide al asistente hacer algo en el equipo o le pregunta por el equipo. "
+    "Si no es claramente una orden, responde no_entendido.\n"
+    "La frase puede estar en español o en inglés. Convierte la frase en UNA acción. "
+    "Los valores fijos de parametro van SIEMPRE en español, tal como aparecen aquí.\n"
     "Acciones y su parámetro:\n"
     + "\n".join(f"- {a.nombre}: {a.prompt}" for a in REGISTRO_ACCIONES)
-    + "\nResponde solo el JSON."
+    + "\n\nEjemplos:\n"
+    + "\n".join(f'"{f}" -> {json.dumps({"accion": a, "parametro": p}, ensure_ascii=False)}' for f, a, p in EJEMPLOS_PROMPT)
+    + "\n\nResponde solo el JSON."
 )
 ESQUEMA = {"type": "object",
            "properties": {"accion": {"type": "string", "enum": ACCIONES}, "parametro": {"type": "string"}},
            "required": ["accion", "parametro"], "additionalProperties": False}
 REGLAS = [(patron, a.nombre, param) for a in REGISTRO_ACCIONES for patron, param in a.reglas]
-EVIDENCIA = {a.nombre: a.evidencia for a in REGISTRO_ACCIONES if a.evidencia}
+EVIDENCIA = {a.nombre: a.evidencia for a in REGISTRO_ACCIONES if a.evidencia and a.riesgo}
 EJECUTORES = {a.nombre: a.ejecutor for a in REGISTRO_ACCIONES if a.ejecutor}
+
+
+# --- Clasificador por embeddings (entre las reglas y el LLM) ---------------------------
+# Compara la frase con los `ejemplos` del registro (y con charla) usando multilingual-e5-small (ONNX int8,
+# ~113 MB, CPU). Elegir 1 de ~25 acciones y saber decir que no es clasificar, no generar: en las pruebas
+# acertó tanto como el mejor LLM en ~3 ms en lugar de 3-6 s. Si el vecino más parecido no llega a
+# UMBRAL_CLASIFICADOR, decide el LLM; sin LLM, no_entendido.
+CLASIFICADOR_DIR = BASE / "modelos/e5-small"
+EJEMPLOS_CHARLA = (  # rechazo explícito: frases de reuniones, ruido y órdenes que el asistente no sabe hacer
+    "sí, eso lo vemos mañana en la reunión", "no, pero el cliente dijo que lo quería para el viernes",
+    "okay, thanks everyone", "la verdad es que el sistema anda lento hoy", "bueno, pasemos al siguiente punto",
+    "¿me escuchan bien?", "perfecto, quedamos así entonces", "eso depende de lo que diga el área de negocio",
+    "hay que revisar la historia de usuario", "I think we should merge it after the review",
+    "ya te mando el enlace por el chat", "nos vemos luego", "gracias a todos por venir", "mmm", "eh",
+    "el despliegue de ayer salió bien", "tenemos que validar con QA", "can you share your screen",
+    "apaga la computadora", "reinicia el equipo", "manda un correo a juan", "llama a mi mamá", "pide una pizza",
+    "shut down the computer",
+)
+
+
+class ClasificadorComandos:
+    def __init__(self, carpeta):
+        import onnxruntime
+        from tokenizers import Tokenizer
+        self.tok = Tokenizer.from_file(str(carpeta / "tokenizer.json"))
+        self.tok.enable_truncation(128)
+        opts = onnxruntime.SessionOptions()
+        opts.intra_op_num_threads = 2
+        opts.log_severity_level = 4
+        self.sesion = onnxruntime.InferenceSession(str(carpeta / "onnx/model_quantized.onnx"), opts,
+                                                   providers=["CPUExecutionProvider"])
+        self.entradas = {i.name for i in self.sesion.get_inputs()}
+        ejemplos = [((a.nombre, p), f) for a in REGISTRO_ACCIONES for f, p in a.ejemplos]
+        ejemplos += [(("no_entendido", ""), f) for f in EJEMPLOS_CHARLA]
+        self.etiquetas = [e for e, _ in ejemplos]
+        self.matriz = self.embeber([f for _, f in ejemplos])
+
+    def embeber(self, textos):
+        # e5: prefijo "query: ", media de los tokens y normalización L2
+        enc = self.tok.encode_batch([f"query: {t}" for t in textos])
+        largo = max(len(e.ids) for e in enc)
+        ids = np.array([e.ids + [0] * (largo - len(e.ids)) for e in enc], dtype=np.int64)
+        mascara = np.array([e.attention_mask + [0] * (largo - len(e.ids)) for e in enc], dtype=np.int64)
+        feed = {"input_ids": ids, "attention_mask": mascara}
+        if "token_type_ids" in self.entradas:
+            feed["token_type_ids"] = np.zeros_like(ids)
+        salida = self.sesion.run(None, feed)[0]
+        m = mascara[..., None].astype(np.float32)
+        v = (salida * m).sum(1) / m.sum(1)
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+    def clasificar(self, frase):
+        """((acción, parámetro), similitud) del ejemplo más parecido."""
+        sim = self.matriz @ self.embeber([frase])[0]
+        i = int(sim.argmax())
+        return self.etiquetas[i], float(sim[i])
+
+
+_clasificador = None
+_clasificador_lock = threading.Lock()
+
+
+def clasificador():
+    """El clasificador, cargado la primera vez. None si está desactivado o falta el modelo o `tokenizers`."""
+    global _clasificador
+    with _clasificador_lock:
+        if _clasificador is None:
+            _clasificador = False
+            if USAR_CLASIFICADOR and (CLASIFICADOR_DIR / "onnx/model_quantized.onnx").is_file():
+                try:
+                    _clasificador = ClasificadorComandos(CLASIFICADOR_DIR)
+                except Exception as e:
+                    log(f"clasificador no disponible: {e}")
+        return _clasificador or None
+
+
+def extraer_app(n):
+    """Busca una app instalada en la frase: el tramo de palabras más largo que resuelve («pon visual studio code»)."""
+    palabras = re.sub(r"[^\w\s]", " ", n).split()
+    for largo in range(min(4, len(palabras)), 0, -1):
+        for i in range(len(palabras) - largo + 1):
+            tramo = " ".join(palabras[i:i + largo])
+            if len(tramo) >= 3 and resolver_app(tramo):
+                return tramo
+    return None
+
+
+SENTIDO_BAJAR = r"\b(baj\w*|menos|down|lower|quieter|reduc\w*|dim\w*)\b|\bmas oscur|\bdarker\b"
+SENTIDO_SUBIR = r"\b(sub\w*|aument\w*|up|louder|brighter)\b|\bmas (clar|fuerte|alto)|\bmuy oscur|no se (ve|oye)"
+SENTIDO_SILENCIO = r"\b(silenci\w*|mute|mutea\w*)\b|quita\w* el (sonido|audio)"
+
+
+SENTIDO_PAUSA = r"\b(pausa\w*|pause|deten\w*|para|stop)\b"
+SENTIDO_REPRODUCIR = r"\b(pon|ponme|reproduc\w*|play|reanuda\w*|continua\w*|resume)\b"
+
+
+def corregir_sentido(n, param, accion):
+    """Los embeddings captan el tema pero no el sentido: «baja un poco el sonido» queda cerca de «silencia»
+    y «pon algo de música», cerca de «pausa la música»."""
+    if accion == "multimedia":
+        if param in ("pausa", "reproducir"):
+            return "pausa" if re.search(SENTIDO_PAUSA, n) else "reproducir" if re.search(SENTIDO_REPRODUCIR, n) else param
+        return param
+    if accion == "volumen" and re.search(SENTIDO_SILENCIO, n):
+        return "silenciar"
+    if re.search(SENTIDO_BAJAR, n):
+        return "bajar"
+    if re.search(SENTIDO_SUBIR, n):
+        return "subir"
+    return param
 
 # Errores recurrentes de Whisper con esta voz/micrófono:
 # "Abre" -> "Ahora", "A ver", "Aurek"…; "Cierra" -> "Sierra", "Cierre"…
@@ -1954,9 +2161,12 @@ def interpretar(texto):
         return "volumen", m.group(2)
     if m := re.search(r"\b(brillo|brightness)\b.*?\b(\d{1,3})\b", n):
         return "brillo", m.group(2)
-    if m := re.search(r"\b(manda|mueve|pasa|envia|move|send)\w*\b.*\b(escritorio|desktop)\s*(\d)\b", n):
+    # «escritorio dos» / «desktop two»: el número también en palabras
+    n_cifras = re.sub(r"\b(escritorio|desktop)\s+(\w+)\b",
+                      lambda m: f"{m.group(1)} {NUMEROS.get(m.group(2), m.group(2))}", n)
+    if m := re.search(r"\b(manda|mueve|pasa|envia|move|send)\w*\b.*\b(escritorio|desktop)\s*(\d)\b", n_cifras):
         return "ventana", f"mover_escritorio_{m.group(3)}"
-    if m := re.search(r"\b(escritorio|desktop)\s*(\d)\b", n):
+    if m := re.search(r"\b(escritorio|desktop)\s*(\d)\b", n_cifras):
         return "ventana", f"escritorio_{m.group(2)}"
     if re.match(r"^\W*(busca|buscar|buscame|search|look up|google)\b", n) and extraer_busqueda(texto):
         return "buscar_web", extraer_busqueda(texto)
@@ -1978,6 +2188,19 @@ def interpretar(texto):
             return "cerrar_app", ""
         if app := app_en(m.group(2)):
             return "cerrar_app", app
+    # Clasificador por embeddings: milisegundos y sin LLM. Si no está seguro, decide el LLM (si lo hay)
+    if clf := clasificador():
+        (accion, param), sim = clf.clasificar(n)
+        seguro = sim >= UMBRAL_CLASIFICADOR
+        log(f"clasificador: {accion}({param!r}) {sim:.2f}{'' if seguro else ' -> dudoso'}")
+        if seguro:
+            if param == PARAM_APP:
+                param = extraer_app(n)
+                if not param:               # «cierra X» con X desconocida nunca debe cerrar la ventana actual
+                    return "no_entendido", ""
+            elif accion in ("volumen", "brillo", "multimedia"):
+                param = corregir_sentido(n, param, accion)
+            return validar_interpretacion(accion, param, n, texto)
     try:
         r = json.loads(llm(MODELO_COMANDOS, PROMPT_COMANDOS, texto, ESQUEMA))
         accion, param = r.get("accion", "no_entendido"), r.get("parametro", "")
@@ -1986,10 +2209,20 @@ def interpretar(texto):
     except Exception as e:
         log(f"error del LLM ({LLM}): {e}")
         return "error_llm", ""
-    # El modelo tiende a adivinar: solo se acepta la acción si la frase contiene palabras que la respalden
+    return validar_interpretacion(accion, param, n, texto)
+
+
+def validar_interpretacion(accion, param, n, texto):
+    """Salvaguardas para lo que propone el clasificador o el LLM (las reglas ya son exactas)."""
+    # En las acciones con riesgo, solo se acepta si la frase contiene palabras que la respalden:
+    # una frase de una reunión no debe bloquear la pantalla ni detener contenedores
     evidencia = EVIDENCIA.get(accion)
     if evidencia and not re.search(evidencia, n):
         log(f"descartado {accion}({param!r}): la frase no lo respalda")
+        return "no_entendido", ""
+    # «Cierra y» (frase cortada) no debe cerrar la ventana actual: sin app, hay que decir «la ventana» / «esto»
+    if accion == "cerrar_app" and not param and not re.search(r"\b(ventana\w*|window\w*|esto|this)\b", n):
+        log(f"descartado cerrar_app(''): no dice qué cerrar")
         return "no_entendido", ""
     numero = re.search(r"\b(\d{1,3})\b", n)
     if accion in ("volumen", "brillo") and numero:
@@ -2005,9 +2238,14 @@ def interpretar(texto):
         accion, param = "pregunta", texto
     if accion == "abrir_proyecto" and not re.search(r"\b(proyecto|repositorio|repo|project)\b", n) and resolver_app(param):
         accion = "abrir_app"
-    if accion == "abrir_app" and not resolver_app(param):
-        return "no_entendido", ""
-    if accion == "cerrar_app" and param and not resolver_app(param):
+    if accion in ("abrir_app", "cerrar_app") and param:
+        # La app tiene que existir y mencionarse en la frase: así «necesito el navegador» abre Firefox, pero
+        # si el LLM adivina la terminal ante «pon algo de música», se descarta
+        app, mencionada = resolver_app(param), extraer_app(n)
+        if not app or not mencionada or resolver_app(mencionada).id != app.id:
+            log(f"descartado {accion}({param!r}): la app no se menciona en la frase")
+            return "no_entendido", ""
+    if accion == "abrir_app" and not param:
         return "no_entendido", ""
     if accion == "ventana" and param not in ATAJOS_KWIN:
         return "no_entendido", ""
@@ -2161,7 +2399,8 @@ class Asistente:
         log(f"listo en {time.time() - t:.1f}s (Whisper {self.whisper.descripcion}, "
             f"VAD: {'Silero' if _VAD.session else 'RMS'}, "
             f"{len({a.id for a in APPS.values()})} apps, voces: {', '.join(self.voz.voces)}, "
-            f"nombre: {NOMBRE}, activación: {activacion})")
+            f"nombre: {NOMBRE}, activación: {activacion}, intérprete: reglas"
+            f"{' + clasificador' if clasificador() else ''}{'' if LLM == 'ninguno' else f' + {LLM} {MODELO_COMANDOS}'})")
 
     def _senal(self, *_):
         if self.voz.hablando:

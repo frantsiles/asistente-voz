@@ -11,8 +11,10 @@ flowchart LR
     B --> C[Whisper<br/>OpenVINO · Intel GPU/CPU<br/>faster-whisper · NVIDIA]
     C --> D{¿Regla rápida?}
     D -- sí --> F[Acción de la lista blanca]
-    D -- no --> E[LLM · salida JSON<br/>Ollama, llama.cpp, LM Studio…]
-    E --> V[Validación por palabras clave] --> F
+    D -- no --> K[Clasificador<br/>embeddings · 3 ms]
+    K -- seguro --> V
+    K -- duda --> E[LLM · salida JSON<br/>Ollama, llama.cpp, LM Studio…]
+    E --> V[Salvaguardas<br/>riesgo · lista blanca] --> F
     F --> G[Notificación de KDE<br/>+ voz con Piper]
 ```
 
@@ -137,7 +139,9 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `llm` | `ollama` | Proveedor del modelo de lenguaje: `ollama`, `openai` (cualquier servidor compatible) o `ninguno` |
 | `llm_url` | según `llm` | `http://127.0.0.1:11434` (Ollama) o `http://127.0.0.1:8080/v1` (llama-server) |
 | `llm_clave_env` | — | Nombre de la variable de entorno con la clave de la API, si el servidor la pide. La clave nunca va en `config.json` |
-| `modelo_comandos` | `llama3.2` | Modelo que interpreta los comandos que no cubren las reglas |
+| `clasificador` | `true` | Clasificador por embeddings entre las reglas y el LLM |
+| `umbral_clasificador` | `0.86` | Similitud mínima para que decida el clasificador; por debajo pregunta al LLM |
+| `modelo_comandos` | `llama3.2` | Modelo que interpreta los comandos dudosos. Recomendado: `gemma4:e2b` |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
 | `idiomas` | `["es", "en"]` | Idiomas que puede detectar Whisper (solo NVIDIA). Evita que el ruido se transcriba como árabe u otros idiomas |
@@ -150,15 +154,34 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `variantes_activacion` | `oye …`, `hey …` | Otras formas aceptadas |
 | `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
 
-### Modelo de lenguaje
+### Cómo interpreta las frases
 
-Las reglas resuelven la mayoría de los comandos sin modelo (en `pruebas/frases.json`, 93 de 105 frases). El LLM se usa para las frases ambiguas, las preguntas y el portapapeles. Se puede elegir:
+En capas, de la más rápida a la más lenta:
+
+1. **Reglas**: resuelven la mayoría de los comandos al instante (en `pruebas/frases.json`, 93 de 105 frases).
+2. **Clasificador por embeddings** (`clasificador`, activo por defecto): compara la frase con ejemplos de cada acción y con ejemplos de charla. ~3 ms en CPU, ~113 MB, sin Ollama. Si duda (similitud < `umbral_clasificador`), pasa a la capa 3.
+3. **LLM** (opcional): las frases dudosas, las preguntas y el portapapeles.
+
+Lo que proponen el clasificador o el LLM pasa por salvaguardas: en las acciones **con riesgo** (bloquear, cerrar, volumen, brillo, ventanas, Docker…) la frase tiene que decirlo explícitamente; una app solo se abre o cierra si se menciona en la frase.
+
+Medido con 36 frases que las reglas no cubren (20 órdenes y 16 de charla real captada en reuniones):
+
+| Intérprete | Órdenes | Charla rechazada | Latencia |
+|---|---|---|---|
+| Antes: llama3.2, sin ejemplos ni capas | 6/20 | 15/16 | 5,5 s |
+| Reglas → clasificador → gemma4:e2b | 17/19* | 16/16 | 3 ms (mediana) |
+
+\* «escritorio dos» pasó a resolverse con reglas. Las 2 que faltan son acciones con riesgo dichas sin la palabra clave («asegura la compu»): a propósito.
+
+#### Modelo de lenguaje
+
+Con el prompt actual (que incluye ejemplos de charla), en las mismas frases: **gemma4:e2b** fue el mejor (16/20 órdenes, 15/16 charla, ~3 s; 4,6 GB en disco), seguido de qwen3.5:2b (16/20, 14/16, ~6 s). llama3.2:1b y qwen3.5:0.8b se quedan cortos. Se puede elegir el proveedor:
 
 | `llm` | Para qué |
 |---|---|
 | `ollama` (por defecto) | Ollama con su API nativa. **Si usas Ollama, usa este modo y no `openai` con su `/v1`**: el `/v1` no envía `num_ctx` ni `keep_alive`, así que Ollama recarga el modelo al alternar (~16 s) y lo descarga a los 5 minutos |
 | `openai` | Cualquier servidor compatible con la API de OpenAI: [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`), LM Studio, LocalAI, vLLM, OpenVINO Model Server. Los comandos usan `response_format` con esquema JSON |
-| `ninguno` | Sin LLM, para equipos con pocos recursos: solo reglas. Las frases ambiguas responden «no te entendí», y las preguntas y el portapapeles (salvo «léelo») avisan de que no hay modelo |
+| `ninguno` | Sin LLM, para equipos con pocos recursos: reglas + clasificador. Las frases dudosas responden «no te entendí», y las preguntas y el portapapeles (salvo «léelo») avisan de que no hay modelo |
 
 `modelo_comandos` y `modelo_preguntas` pueden ser distintos: uno pequeño para comandos (solo elige una acción) y otro mayor para preguntas. Por ejemplo, con llama-server:
 

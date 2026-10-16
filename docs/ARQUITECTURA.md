@@ -67,11 +67,13 @@ Dos motores con la misma interfaz `transcribir(audio, pista) -> (texto, idioma)`
 2. **Reglas especiales** escritas en `interpretar()`, que necesitan extraer partes de la frase: dictado, temporizador (`numeros_en_cifras()` convierte «cinco minutos» → «5 minutos»), puerto, git, terminal en un proyecto, logs y reinicio de contenedores.
 3. **`REGLAS`**: las regex de cada acción del `REGISTRO_ACCIONES`, **en el orden del registro**.
 4. **Reglas de respaldo**: volumen o brillo con número, escritorio N, búsqueda web, tareas, «abre el proyecto X», «abre X», «cierra X».
-5. **LLM** (`MODELO_COMANDOS`) con `PROMPT_COMANDOS` y un esquema JSON (`ESQUEMA`) que limita la acción a los nombres del registro. `llm()` y `llm_stream()` hablan con el proveedor de `LLM`: la API nativa de Ollama o la compatible con OpenAI (`format` o `response_format` para el esquema; líneas JSON o eventos SSE en streaming). Con `LLM = "ninguno"` lanzan `SinLLM`: la frase queda en `no_entendido` y las preguntas avisan al usuario.
+5. **Clasificador por embeddings** (`ClasificadorComandos`, `clasificador()`): multilingual-e5-small en ONNX compara la frase con los `ejemplos` de cada acción del registro y con `EJEMPLOS_CHARLA`. Si la similitud llega a `UMBRAL_CLASIFICADOR`, decide él: `extraer_app()` busca la app en la frase (parámetro `PARAM_APP`) y `corregir_sentido()` arregla subir/bajar, pausa/reproducir, que los embeddings confunden. Si duda, sigue el LLM; sin LLM, `no_entendido`.
+6. **LLM** (`MODELO_COMANDOS`) con `PROMPT_COMANDOS` y un esquema JSON (`ESQUEMA`) que limita la acción a los nombres del registro. `llm()` y `llm_stream()` hablan con el proveedor de `LLM`: la API nativa de Ollama o la compatible con OpenAI (`format` o `response_format` para el esquema; líneas JSON o eventos SSE en streaming). Con `LLM = "ninguno"` lanzan `SinLLM`: la frase queda en `no_entendido` y las preguntas avisan al usuario.
 
-La respuesta del LLM pasa por dos filtros:
+Lo que proponen el clasificador o el LLM pasa por `validar_interpretacion()`:
 
-- **Evidencia**: la frase normalizada tiene que cumplir la regex `EVIDENCIA` de esa acción. Si el modelo «adivina» `bloquear_pantalla` ante una frase sin sentido, se descarta.
+- **Evidencia, solo en acciones con `riesgo`**: la frase normalizada tiene que cumplir la regex `EVIDENCIA` de esa acción. Si el modelo «adivina» `bloquear_pantalla` ante una frase de una reunión, se descarta. En las acciones sin riesgo no se exige: descartaba órdenes válidas («necesito el navegador»).
+- **La app se menciona**: `abrir_app` y `cerrar_app` solo se aceptan si la app aparece en la frase (`extraer_app()`), y `cerrar_app` sin app solo si dice «la ventana» / «esto».
 - **Lista blanca del parámetro**: la app tiene que existir (`resolver_app`), el atajo estar en `ATAJOS_KWIN`, la tarea en `TAREAS`, el contenedor existir (`resolver_contenedor`).
 
 ### Ejecución

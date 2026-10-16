@@ -60,7 +60,9 @@ DefinicionAccion(
 |---|---|
 | `nombre` | Identificador. Aparece en el esquema JSON del LLM, en `CONFIRMAR` y en las pruebas |
 | `prompt` | Una línea para `PROMPT_COMANDOS`: qué hace y qué valores admite `parametro`. Los valores fijos van en español |
-| `evidencia` | Regex sobre la frase **normalizada** (minúsculas, sin tildes). Sin ella, el LLM podría elegir la acción ante cualquier frase |
+| `evidencia` | Regex sobre la frase **normalizada** (minúsculas, sin tildes). Solo se exige si `riesgo=True` |
+| `riesgo` | `True` si ejecutarla por error molesta (bloquear, cerrar, detener, volumen…): el clasificador y el LLM solo la eligen si la frase cumple `evidencia` |
+| `ejemplos` | `(frase, parámetro)` para el clasificador por embeddings, en español e inglés y con distintas formas de decirlo. `PARAM_APP` = buscar la app en la frase. Sin ejemplos, la acción solo llega por reglas o por el LLM |
 | `reglas` | `(regex, parámetro)` que resuelven la frase sin pasar por el LLM. `None` como parámetro = la frase completa |
 | `ejecutor` | La función del paso 1 |
 

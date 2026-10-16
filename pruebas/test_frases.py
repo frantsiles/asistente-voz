@@ -115,15 +115,39 @@ def probar_salvaguardas() -> tuple[int, int]:
         f"APPS['desktop'] = {asistente.APPS.get('desktop')!r}",
     )
 
-    # 2. 'pon' no debe dar evidencia de abrir_app
-    verificar(
-        "'Pon algo de música' no tiene evidencia de abrir_app",
-        not re.search(asistente.EVIDENCIA["abrir_app"], asistente.normalizar("Pon algo de música")),
-    )
-
-    # 3. Si el LLM alucina valores fuera de lista blanca, interpretar() los rechaza
-    orig_llm = asistente.llm
+    # 2. Una app que el LLM adivina sin que se mencione en la frase no se abre («Pon algo de música» -> terminal)
+    orig = asistente.llm, asistente.clasificador
     try:
+        asistente.clasificador = lambda: None
+        asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "abrir_app", "parametro": "terminal"})
+        acc, prm = asistente.validar_interpretacion("abrir_app", "terminal", asistente.normalizar("pon algo de musica"),
+                                                    "pon algo de música")
+        verificar("abrir_app sin mencionar la app en la frase se descarta", acc == "no_entendido", f"({acc!r}, {prm!r})")
+        acc, prm = asistente.validar_interpretacion("abrir_app", "navegador", "necesito el navegador", "necesito el navegador")
+        verificar("abrir_app con la app mencionada («necesito el navegador») se acepta", acc == "abrir_app",
+                  f"({acc!r}, {prm!r})")
+        acc, prm = asistente.validar_interpretacion("cerrar_app", "", "cierra y", "Cierra y")
+        verificar("cerrar_app sin decir qué cerrar («Cierra y») se descarta", acc == "no_entendido", f"({acc!r}, {prm!r})")
+        acc, prm = asistente.validar_interpretacion("bloquear_pantalla", "", "me voy, ya terminamos", "me voy")
+        verificar("Acción con riesgo sin evidencia (bloquear) se descarta", acc == "no_entendido", f"({acc!r}, {prm!r})")
+        verificar("Toda acción con riesgo tiene evidencia",
+                  all(a.evidencia for a in asistente.REGISTRO_ACCIONES if a.riesgo),
+                  [a.nombre for a in asistente.REGISTRO_ACCIONES if a.riesgo and not a.evidencia])
+    finally:
+        asistente.llm, asistente.clasificador = orig
+    # El clasificador acierta el tema pero a veces no el sentido (errores reales que se corrigen)
+    for frase, accion, error, esperado in (("baja un poco el sonido", "volumen", "silenciar", "bajar"),
+                                           ("pon la pantalla más oscura", "brillo", "subir", "bajar"),
+                                           ("la pantalla está muy oscura", "brillo", "bajar", "subir"),
+                                           ("quita el sonido", "volumen", "bajar", "silenciar"),
+                                           ("pon algo de música", "multimedia", "pausa", "reproducir")):
+        obtenido = asistente.corregir_sentido(asistente.normalizar(frase), error, accion)
+        verificar(f"corregir_sentido({frase!r}) = {esperado}", obtenido == esperado, obtenido)
+
+    # 3. Si el LLM alucina valores fuera de lista blanca, interpretar() los rechaza (sin clasificador delante)
+    orig_llm, orig_clf = asistente.llm, asistente.clasificador
+    try:
+        asistente.clasificador = lambda: None
         asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "abrir_app", "parametro": "app_inventada_xyz"})
         acc, prm = asistente.interpretar("Por favor ejecuta app_inventada_xyz")
         verificar(
@@ -148,7 +172,7 @@ def probar_salvaguardas() -> tuple[int, int]:
             f"devolvió ({acc!r}, {prm!r})",
         )
     finally:
-        asistente.llm = orig_llm
+        asistente.llm, asistente.clasificador = orig_llm, orig_clf
 
     # 4. Silero VAD cargado y distinguiendo silencio
     verificar(

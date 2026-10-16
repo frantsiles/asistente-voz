@@ -75,7 +75,7 @@ echo "    $PY ($("$PY" --version))"
 "$DIR/venv/bin/pip" install -q --upgrade pip
 "$DIR/venv/bin/pip" install -q -r "$DIR/requirements-$MOTOR.txt"
 
-echo "==> Modelos (Whisper ~800 MB-1,6 GB + voces ~200 MB)"
+echo "==> Modelos (Whisper ~800 MB-1,6 GB + voces ~200 MB + clasificador ~113 MB)"
 "$DIR/venv/bin/python" -I - "$DIR/modelos" "$MOTOR" "${WHISPER_MODELO:-large-v3-turbo}" <<'EOF'
 import sys
 from pathlib import Path
@@ -95,6 +95,10 @@ for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medi
     for ext in ["", ".json"]:
         if not (dst / "voces" / (voz + ext)).exists():
             hf_hub_download("rhasspy/piper-voices", voz + ext, local_dir=dst / "voces")
+# Clasificador de comandos: multilingual-e5-small en ONNX int8 (~113 MB)
+for f in ["onnx/model_quantized.onnx", "tokenizer.json"]:
+    if not (dst / "e5-small" / f).exists():
+        hf_hub_download("Xenova/multilingual-e5-small", f, local_dir=dst / "e5-small")
 vad_dst = dst / "silero_vad_v6.onnx"
 if not vad_dst.exists():
     try:
