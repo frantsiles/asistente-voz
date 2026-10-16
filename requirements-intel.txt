@@ -1,0 +1,3 @@
+# Whisper con OpenVINO: GPU/NPU Intel o CPU
+-r requirements.txt
+openvino-genai==2026.4.1.0

@@ -1,7 +1,7 @@
 """Asistente de voz local para KDE (español e inglés).
 
-Flujo: atajo de teclado -> graba hasta que dejas de hablar -> Whisper (OpenVINO, detecta
-el idioma) -> reglas rápidas o llama3.2 (Ollama, GPU) -> acción de una lista blanca ->
+Flujo: atajo de teclado -> graba hasta que dejas de hablar -> Whisper (OpenVINO en Intel o
+faster-whisper en NVIDIA, detecta el idioma) -> reglas rápidas o llama3.2 (Ollama, GPU) -> acción de una lista blanca ->
 respuesta hablada con Piper en el mismo idioma + notificación.
 
 Se activa enviando SIGUSR1 al servicio (eso hace el atajo):
@@ -18,6 +18,8 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import sysconfig
 import threading
 import time
 import unicodedata
@@ -26,7 +28,6 @@ import wave
 from pathlib import Path
 
 import numpy as np
-import openvino_genai
 from piper import PiperVoice
 
 # --- Configuración -----------------------------------------------------------
@@ -44,10 +45,16 @@ def _cargar_config():
 
 CFG = _cargar_config()
 
+# Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
+WHISPER_MOTOR = CFG.get("whisper", "auto")
 WHISPER = BASE / "modelos/whisper-medium-int8-ov"
 # Se prueban en orden. GPU requiere el paquete intel-compute-runtime;
-# NPU, que Fedora incluya el compilador del NPU en intel-npu-driver.
+# NPU, que la distribución incluya el compilador del NPU en intel-npu-driver.
 WHISPER_DISPOSITIVOS = ["GPU", "CPU"]
+WHISPER_CUDA = CFG.get("whisper_modelo", "large-v3-turbo")   # modelo de faster-whisper
+WHISPER_CUDA_TIPO = CFG.get("whisper_precision", "int8_float16")  # float16 ocupa el doble de VRAM
+# Con audio ruidoso Whisper puede "detectar" árabe, ruso…: se elige el más probable entre estos
+IDIOMAS = CFG.get("idiomas", ["es", "en"])
 VOCES = {
     "es": BASE / "modelos/voces/es/es_MX/claude/high/es_MX-claude-high.onnx",
     "en": BASE / "modelos/voces/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
@@ -69,19 +76,21 @@ APPS_TERMINAL = CFG.get("apps_terminal", ["htop", "btop", "top", "nvtop", "lazyg
                                           "ranger", "yazi", "ncdu"])
 
 # Apps gráficas: se leen de los .desktop instalados (como el menú de KDE).
-# Estos alias (clave normalizada sin espacios -> id del .desktop o herramienta de consola)
-# cubren nombres genéricos y errores típicos de transcripción.
+# Estos alias (clave normalizada sin espacios -> ids candidatos del .desktop o herramienta de consola)
+# cubren nombres genéricos y errores típicos de transcripción. Se usa el primer id instalado:
+# los nombres cambian entre distribuciones (Fedora/Arch) y entre paquete nativo y Flatpak.
 ALIAS_APPS = {
     **dict.fromkeys(["vscode", "vs", "code", "visualstudiocode", "visualcode", "visualstudio",
-                     "visualestudiocode", "vscodigo", "codigo"], "com.microsoft.VSCode"),
-    **dict.fromkeys(["navegador", "browser", "webbrowser", "elnavegador"], "org.mozilla.firefox"),
-    **dict.fromkeys(["terminal", "consola", "laterminal", "kiti", "kity", "kitti"], "kitty"),
+                     "visualestudiocode", "vscodigo", "codigo"], ("com.microsoft.VSCode", "code", "code-oss")),
+    **dict.fromkeys(["navegador", "browser", "webbrowser", "elnavegador"], ("org.mozilla.firefox", "firefox")),
+    **dict.fromkeys(["terminal", "consola", "laterminal", "kiti", "kity", "kitti"], ("kitty", "org.kde.konsole")),
     **dict.fromkeys(["archivos", "explorador", "exploradordearchivos", "files", "filemanager"], "org.kde.dolphin"),
     **dict.fromkeys(["configuracion", "ajustes", "settings", "configuraciondelsistema"], "systemsettings"),
-    **dict.fromkeys(["compass", "mongo", "mongodb", "mongocompass", "compas"], "com.mongodb.Compass"),
+    **dict.fromkeys(["compass", "mongo", "mongodb", "mongocompass", "compas"],
+                    ("com.mongodb.Compass", "mongodb-compass")),
     **dict.fromkeys(["monitordelsistema", "monitor", "systemmonitor"], "org.kde.plasma-systemmonitor"),
     **dict.fromkeys(["calculadora", "calculator"], "org.kde.kcalc"),
-    **dict.fromkeys(["edge", "microsoftedge"], "microsoft-edge"),
+    **dict.fromkeys(["edge", "microsoftedge"], ("microsoft-edge", "com.microsoft.Edge")),
     **dict.fromkeys(["hetop", "hitop", "achetop"], "htop"),
     **CFG.get("alias_apps", {}),
 }
@@ -118,8 +127,9 @@ MSG = {
         "perfil": "Perfil {x} activado durante una hora.", "buscando": "Buscando {x}.",
         "ollama_error": "No pude conectar con Ollama.", "no_entendi": "No te entendí.",
         "fallo": "Algo falló al ejecutar el comando.", "pensando": "Pensando…",
-        "estado": "El procesador está a {t} grados, usas {u:.0f} de {m:.0f} gigas de memoria, "
+        "estado": "El procesador está a {t} grados{gpu}, usas {u:.0f} de {m:.0f} gigas de memoria, "
                   "el disco tiene {d:.0f} gigas libres, y el perfil de energía es {p}.",
+        "gpu": ", la tarjeta gráfica a {t} grados",
         "perfiles": {"performance": "rendimiento", "balanced": "equilibrado", "quiet": "silencioso", "cool": "fresco",
                      "power-saver": "ahorro"},
         "responde": "Responde en español, en máximo 3 frases cortas. El texto se leerá en voz alta: "
@@ -139,8 +149,9 @@ MSG = {
         "perfil": "{x} profile enabled for one hour.", "buscando": "Searching for {x}.",
         "ollama_error": "I couldn't connect to Ollama.", "no_entendi": "Sorry, I didn't understand.",
         "fallo": "Something went wrong running the command.", "pensando": "Thinking…",
-        "estado": "The CPU is at {t} degrees, you're using {u:.0f} of {m:.0f} gigabytes of memory, "
+        "estado": "The CPU is at {t} degrees{gpu}, you're using {u:.0f} of {m:.0f} gigabytes of memory, "
                   "the disk has {d:.0f} gigabytes free, and the power profile is {p}.",
+        "gpu": ", the graphics card at {t} degrees",
         "perfiles": {"performance": "performance", "balanced": "balanced", "quiet": "quiet", "cool": "cool",
                      "power-saver": "power saver"},
         "responde": "Answer in English, in at most 3 short sentences. The text will be read aloud: "
@@ -182,10 +193,12 @@ def idioma(texto):
 _notif_id = None
 
 
-def sonido(nombre):
+def sonido(nombre, esperar=False):
     f = SONIDOS / f"{nombre}.oga"
     if f.exists():
-        subprocess.Popen(["pw-play", str(f)], stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(["pw-play", str(f)], stderr=subprocess.DEVNULL)
+        if esperar:      # el aviso de inicio no debe colarse en la grabación
+            p.wait()
 
 
 def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6):
@@ -247,7 +260,12 @@ def grabar(detener):
         p.wait()
     if not hablando and not detener.is_set():
         return None
-    return np.concatenate(bloques).astype(np.float32) / 32768.0
+    audio = np.concatenate(bloques)
+    saturado = np.mean(np.abs(audio) >= 32700)
+    if saturado > 0.005:
+        log(f"audio saturado ({saturado:.1%} de las muestras): baja la ganancia del micrófono "
+            f"(wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.3)")
+    return audio.astype(np.float32) / 32768.0
 
 
 def guardar_grabacion(audio, conservar=10):
@@ -298,9 +316,11 @@ def cargar_apps():
             por_id[tool] = apps[tool] = App(tool, tool, [TERMINAL, tool])
     if "kitty" in por_id:
         apps["kitty"] = por_id["kitty"]
-    for alias, id in ALIAS_APPS.items():
-        if id in por_id:
-            apps[alias] = por_id[id]
+    for alias, ids in ALIAS_APPS.items():
+        for id in [ids] if isinstance(ids, str) else ids:
+            if id in por_id:
+                apps[alias] = por_id[id]
+                break
     return apps
 
 
@@ -380,15 +400,29 @@ EVIDENCIA = {  # la acción del modelo solo se acepta si la frase normalizada cu
 }
 
 # Errores recurrentes de Whisper con esta voz/micrófono: "Abre" se transcribe como "Ahora", "A ver", "Aurek"…
-ABRE_MAL_OIDO = r"^(ahora|aurea|aurek|aure|a ver|abra|habre|abri|abrir|ahi|haber|open up)\b,?\s*(a\s+)?"
+ABRE_MAL_OIDO = r"^(ahora|aurea|aurek|aure|a ver|abra|habre|abri|abrir|ahi|haber|avril|abril|open up)\b,?\s*(a\s+)?"
+
+
+def app_en(resto):
+    """Nombre de app en lo que sigue a "abre". Whisper a veces repite o mezcla palabras
+    («fire, firefox», «farid, firefox»): si la frase completa no es una app, prueba palabra por palabra."""
+    resto = resto.strip(" .?!,")
+    if resolver_app(resto):
+        return resto
+    for w in reversed(re.split(r"[\s,]+", resto)):
+        if len(w) > 3 and resolver_app(w):
+            return w
+    return None
 
 
 def corregir(n):
     m = re.match(ABRE_MAL_OIDO, n)
     if m:
         resto = n[m.end():]
-        if resolver_app(resto.strip(" .?!")) or re.search(r"\bproyecto\b", resto):
+        if re.search(r"\bproyecto\b", resto):
             return "abre " + resto
+        if app := app_en(resto):
+            return "abre " + app
     return n
 
 
@@ -427,8 +461,8 @@ def interpretar(texto):
         return "buscar_web", extraer_busqueda(texto)
     # "abre X" / "open X" donde X es una app conocida: sin pasar por el modelo
     m = re.match(r"^(abre|abrir|open|launch|lanza|inicia|ejecuta)\s+(.+?)[.!?]*$", n)
-    if m and resolver_app(m.group(2)) and "proyecto" not in m.group(2) and "project" not in m.group(2):
-        return "abrir_app", m.group(2)
+    if m and "proyecto" not in m.group(2) and "project" not in m.group(2) and (app := app_en(m.group(2))):
+        return "abrir_app", app
     try:
         r = json.loads(ollama(MODELO_COMANDOS, PROMPT_COMANDOS, texto, ESQUEMA))
         accion, param = r.get("accion", "no_entendido"), r.get("parametro", "")
@@ -507,18 +541,41 @@ def mpris(metodo, solo_activo=False):
 
 def temperatura_cpu():
     for hw in Path("/sys/class/hwmon").iterdir():
-        if (hw / "name").read_text().strip() == "coretemp":
+        if (hw / "name").read_text().strip() in ("coretemp", "k10temp", "zenpower"):   # Intel / AMD
             return int((hw / "temp1_input").read_text()) // 1000
     return None
+
+
+def temperatura_gpu_nvidia():
+    if not shutil.which("nvidia-smi"):
+        return None
+    r = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                       capture_output=True, text=True, timeout=5)
+    t = r.stdout.split()
+    return int(t[0]) if r.returncode == 0 and t and t[0].isdigit() else None
+
+
+def perfil_energia_actual():
+    """Perfil de power-profiles-daemon. /sys/firmware/acpi/platform_profile no existe en todos los equipos."""
+    r = subprocess.run(["busctl", "--system", "get-property", "org.freedesktop.UPower.PowerProfiles",
+                        "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles",
+                        "ActiveProfile"], capture_output=True, text=True)
+    m = re.search(r'"(.+)"', r.stdout)
+    if m:
+        return m.group(1)
+    f = Path("/sys/firmware/acpi/platform_profile")
+    return f.read_text().strip() if f.exists() else "?"
 
 
 def estado_sistema(m):
     info = dict(l.split(":", 1) for l in Path("/proc/meminfo").read_text().splitlines())
     total = int(info["MemTotal"].split()[0]) / 1048576
     libre = int(info["MemAvailable"].split()[0]) / 1048576
-    perfil = Path("/sys/firmware/acpi/platform_profile").read_text().strip()
-    return m["estado"].format(t=temperatura_cpu() or "?", u=total - libre, m=total,
-                              d=shutil.disk_usage("/").free / 1e9, p=m["perfiles"].get(perfil, perfil))
+    perfil = perfil_energia_actual()
+    gpu = temperatura_gpu_nvidia()
+    return m["estado"].format(t=temperatura_cpu() or "?", gpu=m["gpu"].format(t=gpu) if gpu else "",
+                              u=total - libre, m=total, d=shutil.disk_usage("/").free / 1e9,
+                              p=m["perfiles"].get(perfil, perfil))
 
 
 def ejecutar(accion, param, lang):
@@ -612,25 +669,84 @@ def ejecutar(accion, param, lang):
     return m["no_entendi"]
 
 
+# --- Voz a texto ---------------------------------------------------------------------
+def motor_whisper():
+    if WHISPER_MOTOR != "auto":
+        return WHISPER_MOTOR
+    try:
+        import faster_whisper  # noqa: F401  (solo se instala en equipos con NVIDIA)
+        return "cuda"
+    except ImportError:
+        return "openvino"
+
+
+def preparar_cuda():
+    """CTranslate2 busca libcublas.so.12 y libcudnn*.so.9, que vienen en los paquetes nvidia-*-cu12 del
+    venv, fuera de la ruta del enlazador. LD_LIBRARY_PATH solo se lee al arrancar el proceso, así que
+    se define y el script se vuelve a ejecutar a sí mismo."""
+    libs = sorted(str(d) for d in (Path(sysconfig.get_paths()["purelib"]) / "nvidia").glob("*/lib"))
+    actual = os.environ.get("LD_LIBRARY_PATH", "")
+    if not libs or all(l in actual.split(":") for l in libs):
+        return
+    os.environ["LD_LIBRARY_PATH"] = ":".join(libs + ([actual] if actual else []))
+    os.execv(sys.executable, sys.orig_argv)
+
+
+class WhisperOpenVINO:
+    def __init__(self):
+        import openvino_genai
+        for dispositivo in WHISPER_DISPOSITIVOS:
+            try:
+                # Sin CACHE_DIR: con la GPU, el modelo leído de la caché transcribe basura (fallo de OpenVINO)
+                self.pipe = openvino_genai.WhisperPipeline(str(WHISPER), dispositivo)
+                self.descripcion = f"{WHISPER.name} en {dispositivo}"
+                return
+            except Exception as e:
+                log(f"Whisper no disponible en {dispositivo}: {str(e).strip().splitlines()[-1][:120]}")
+        raise RuntimeError("Whisper (OpenVINO) no pudo cargarse en ningún dispositivo")
+
+    def transcribir(self, audio, pista):
+        return self.pipe.generate(audio.tolist(), task="transcribe", initial_prompt=pista).texts[0].strip()
+
+
+class WhisperCUDA:
+    """faster-whisper (CTranslate2) en la GPU NVIDIA; si CUDA falla, en la CPU con int8."""
+    def __init__(self):
+        from faster_whisper import WhisperModel
+        local = BASE / f"modelos/faster-whisper-{WHISPER_CUDA}"
+        modelo = str(local) if local.is_dir() else WHISPER_CUDA
+        for dispositivo, tipo in (("cuda", WHISPER_CUDA_TIPO), ("cpu", "int8")):
+            try:
+                self.modelo = WhisperModel(modelo, device=dispositivo, compute_type=tipo)
+                self.descripcion = f"faster-whisper {WHISPER_CUDA} en {dispositivo} ({tipo})"
+                break
+            except Exception as e:
+                log(f"Whisper no disponible en {dispositivo}: {str(e).strip().splitlines()[-1][:120]}")
+        else:
+            raise RuntimeError("Whisper (faster-whisper) no pudo cargarse")
+        # La primera transcripción en CUDA tarda varios segundos (inicialización de cuDNN): se hace ahora
+        self.transcribir(np.zeros(RATE, np.float32), "")
+
+    def transcribir(self, audio, pista):
+        _, _, probabilidades = self.modelo.detect_language(audio)
+        lang = max(((l, p) for l, p in probabilidades if l in IDIOMAS), key=lambda x: x[1], default=(None, 0))[0]
+        segmentos, _ = self.modelo.transcribe(audio, task="transcribe", language=lang, initial_prompt=pista or None,
+                                              beam_size=5, condition_on_previous_text=False)
+        return "".join(s.text for s in segmentos).strip()
+
+
 # --- Bucle principal ---------------------------------------------------------------
 class Asistente:
     def __init__(self):
         t = time.time()
-        for dispositivo in WHISPER_DISPOSITIVOS:
-            try:
-                # Sin CACHE_DIR: con la GPU, el modelo leído de la caché transcribe basura (fallo de OpenVINO)
-                self.whisper = openvino_genai.WhisperPipeline(str(WHISPER), dispositivo)
-                self.dispositivo = dispositivo
-                break
-            except Exception as e:
-                log(f"Whisper no disponible en {dispositivo}: {str(e).strip().splitlines()[-1][:120]}")
+        self.whisper = WhisperCUDA() if motor_whisper() == "cuda" else WhisperOpenVINO()
         self.voz = Voz()
         self.pista = pista_whisper()
         self.activar = threading.Event()
         self.detener = threading.Event()
         self.escuchando = False
         signal.signal(signal.SIGUSR1, self._senal)
-        log(f"listo en {time.time() - t:.1f}s (Whisper {WHISPER.name} en {self.dispositivo}, "
+        log(f"listo en {time.time() - t:.1f}s (Whisper {self.whisper.descripcion}, "
             f"{len({a.id for a in APPS.values()})} apps, voces: {', '.join(self.voz.voces)})")
 
     def _senal(self, *_):
@@ -648,8 +764,8 @@ class Asistente:
     def atender(self):
         self.escuchando = True
         self.detener.clear()
-        sonido("button-pressed")
         notificar("Escuchando… / Listening…", "", segundos=15)
+        sonido("button-pressed", esperar=True)
         audio = grabar(self.detener)
         self.escuchando = False
         if audio is None:
@@ -659,8 +775,7 @@ class Asistente:
         t = time.time()
         guardar_grabacion(audio)
         # Sin language: Whisper detecta si es español o inglés
-        texto = self.whisper.generate(audio.tolist(), task="transcribe",
-                                      initial_prompt=self.pista).texts[0].strip()
+        texto = self.whisper.transcribir(audio, self.pista)
         t_stt = time.time() - t
         if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES):
             notificar("No te entendí / Didn't catch that", "", segundos=2)
@@ -700,4 +815,6 @@ class Asistente:
 
 
 if __name__ == "__main__":
+    if motor_whisper() == "cuda":
+        preparar_cuda()
     Asistente().correr()

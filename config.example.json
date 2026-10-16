@@ -2,9 +2,13 @@
   "proyectos": "~/Proyectos",
   "compose": "~/Proyectos/docker-compose.yml",
   "terminal": "kitty",
-  "apps_terminal": ["htop", "btop", "lazygit", "lazydocker", "k9s"],
+  "apps_terminal": ["htop", "btop", "nvtop", "lazygit", "lazydocker", "k9s"],
   "alias_apps": {"mongo": "com.mongodb.Compass"},
   "modelo_comandos": "llama3.2",
   "modelo_preguntas": "llama3.2",
+  "whisper": "auto",
+  "idiomas": ["es", "en"],
+  "whisper_modelo": "large-v3-turbo",
+  "whisper_precision": "int8_float16",
   "hablar": true
 }

@@ -7,7 +7,7 @@ Nada sale de tu equipo: la transcripción, la interpretación y la voz corren en
 ```mermaid
 flowchart LR
     A[Atajo de teclado] --> B[Grabación<br/>PipeWire + detección de silencio]
-    B --> C[Whisper medium<br/>OpenVINO · GPU/CPU]
+    B --> C[Whisper<br/>OpenVINO · Intel GPU/CPU<br/>faster-whisper · NVIDIA]
     C --> D{¿Regla rápida?}
     D -- sí --> F[Acción de la lista blanca]
     D -- no --> E[llama3.2<br/>Ollama · salida JSON]
@@ -44,17 +44,33 @@ Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te 
 
 ## Requisitos
 
-- Linux con **KDE Plasma 6** y **PipeWire**. Desarrollado en Fedora 44.
-- **Python 3.13**. Las ruedas de OpenVINO no siempre están disponibles para la versión más reciente de Python.
+- Linux con **KDE Plasma 6** y **PipeWire**. Probado en **Fedora 44** y **Arch Linux**.
+- **Python 3.13**. Las ruedas de OpenVINO y CTranslate2 no siempre están disponibles para la versión más reciente de Python (Arch ya trae 3.14). Si no tienes `python3.13`, el instalador lo descarga con [`uv`](https://docs.astral.sh/uv/) (`sudo pacman -S uv`).
 - **[Ollama](https://ollama.com)** con el modelo `llama3.2`:
   ```bash
   ollama pull llama3.2
   ```
-- Opcional, para **GPU Intel**:
-  - Whisper en la GPU: `sudo dnf install intel-compute-runtime`
+
+Paquetes del sistema:
+
+| | Fedora | Arch Linux |
+|---|---|---|
+| Audio, notificaciones, KDE | `pipewire-utils wireplumber libnotify kf6-kio-core` | `pipewire wireplumber libnotify kio` |
+| Perfiles de energía | `power-profiles-daemon` | `power-profiles-daemon` |
+| Ollama | [instalador oficial](https://ollama.com/download) | `ollama` (o `ollama-cuda` con NVIDIA) |
+
+### GPU
+
+El instalador detecta la GPU y elige el motor de Whisper:
+
+- **NVIDIA** → [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) con el modelo `large-v3-turbo` en `int8_float16`. Solo necesita el driver propietario (`nvidia-open` / `nvidia-utils` en Arch, `akmod-nvidia` de RPM Fusion en Fedora): CUDA 12 y cuDNN 9 se instalan como paquetes de pip dentro del `venv`, así que no importa la versión de CUDA del sistema.
+  - Ollama en la GPU: en Arch instala `ollama-cuda`; en Fedora el instalador oficial ya incluye CUDA.
+  - Con 6 GB de VRAM caben Whisper turbo (~1,2 GB en `int8_float16`) y llama3.2 (~2,5 GB) completos en la GPU. En `float16` Whisper ocupa ~2,2 GB y parte de llama3.2 pasa a la CPU; la precisión de la transcripción es la misma.
+- **Intel** → OpenVINO con `whisper-medium-int8-ov`.
+  - Whisper en la GPU: `sudo dnf install intel-compute-runtime` / `sudo pacman -S intel-compute-runtime`
   - Ollama en la GPU integrada: añade `Environment="OLLAMA_IGPU_ENABLE=1"` con `sudo systemctl edit ollama`
 
-Sin GPU todo funciona en la CPU, solo que más lento.
+Se puede forzar con `MOTOR=nvidia ./instalar.sh` o `MOTOR=intel ./instalar.sh`. Sin GPU todo funciona en la CPU, solo que más lento.
 
 ## Instalación
 
@@ -64,7 +80,7 @@ cd ~/.local/share/asistente-voz
 ./instalar.sh
 ```
 
-El script crea el `venv`, descarga los modelos (~1 GB), crea `config.json` e instala y arranca el servicio de usuario de systemd. No necesita `sudo`.
+El script detecta la distribución y la GPU, avisa de los paquetes que falten, crea el `venv`, descarga los modelos (~1–2 GB), crea `config.json` e instala y arranca el servicio de usuario de systemd. No necesita `sudo`.
 
 Después asigna el atajo en **Configuración del sistema → Teclado → Atajos de teclado → Añadir nuevo → Aplicación → "Asistente de voz"**, por ejemplo `Meta+V`.
 
@@ -81,6 +97,10 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `alias_apps` | `{}` | Nombres extra → id del `.desktop`, p. ej. `{"mongo": "com.mongodb.Compass"}` |
 | `modelo_comandos` | `llama3.2` | Modelo de Ollama que interpreta los comandos |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
+| `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
+| `idiomas` | `["es", "en"]` | Idiomas que puede detectar Whisper (solo NVIDIA). Evita que el ruido se transcriba como árabe u otros idiomas |
+| `whisper_modelo` | `large-v3-turbo` | Modelo de faster-whisper (solo NVIDIA), p. ej. `medium` |
+| `whisper_precision` | `int8_float16` | Precisión en la GPU NVIDIA. `float16` ocupa el doble de VRAM |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
 
 Después de cambiar algo:
@@ -91,15 +111,13 @@ systemctl --user restart asistente-voz
 
 ## Rendimiento
 
-Medido en un Intel Core Ultra 7 255U con 32 GB de RAM y la GPU integrada Arc:
-
-| Paso | Tiempo |
-|---|---|
-| Transcripción (Whisper medium, GPU) | ~1,1 s (2,7 s en CPU) |
-| Comandos con regla rápida | instantáneo |
-| Comandos interpretados por llama3.2 (GPU) | ~1,5–2,5 s |
-| Preguntas | ~5–8 s |
-| Voz (Piper) | ~0,3 s |
+| Paso | Intel Core Ultra 7 255U, Arc integrada | i7-9750H + RTX 2060 |
+|---|---|---|
+| Transcripción | ~1,1 s (Whisper medium, OpenVINO; 2,7 s en CPU) | ~0,6 s (large-v3-turbo, CUDA) |
+| Comandos con regla rápida | instantáneo | instantáneo |
+| Comandos interpretados por llama3.2 (GPU) | ~1,5–2,5 s | ~0,4–0,75 s |
+| Preguntas | ~5–8 s | ~2 s |
+| Voz (Piper) | ~0,3 s | |
 
 ## Solución de problemas
 
@@ -118,6 +136,16 @@ Cada comando se registra así: `«texto» [idioma] -> acción(parámetro) [voz 1
 
 **Transcribe basura en la GPU** (p. ej. «A P P?»): no uses `CACHE_DIR` con `WhisperPipeline` en la GPU. El modelo cargado desde la caché compilada produce salida corrupta (fallo de OpenVINO 2026.4).
 
+**NVIDIA: `Unable to load libcudnn…` o `libcublas.so.12`**: el asistente añade al arrancar las librerías de `venv/.../site-packages/nvidia/*/lib` a `LD_LIBRARY_PATH`. Si falla, comprueba que estén instalados `nvidia-cublas-cu12` y `nvidia-cudnn-cu12` en el `venv` y que `nvidia-smi` funcione. Si CUDA no carga, Whisper pasa a la CPU (`int8`) y lo indica en el log.
+
+**Transcribe frases sin sentido o en otro idioma** (y en el log aparece `audio saturado`): la ganancia del micrófono está demasiado alta y la voz se distorsiona. En algunos portátiles el 100 % de PipeWire ya amplifica mucho; prueba entre 20 % y 40 %:
+
+```bash
+wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
+```
+
+**"¿Cómo está la compu?" sin perfil de energía**: el perfil se lee de `power-profiles-daemon`; actívalo con `sudo systemctl enable --now power-profiles-daemon`.
+
 **NPU**: OpenVINO detecta el NPU de Intel, pero el paquete `intel-npu-driver` de Fedora no incluye el compilador del NPU, así que la compilación falla con `ZE_RESULT_ERROR_UNSUPPORTED_FEATURE`. Cuando esté disponible, basta con poner `"NPU"` primero en `WHISPER_DISPOSITIVOS`.
 
 ## Privacidad
@@ -131,13 +159,13 @@ Cada comando se registra así: `«texto» [idioma] -> acción(parámetro) [voz 1
 asistente.py            # el asistente (configuración, reglas, acciones)
 config.example.json     # plantilla de configuración
 instalar.sh             # instalación para el usuario actual
-requirements.txt
+requirements*.txt       # comunes + -intel (OpenVINO) / -nvidia (faster-whisper)
 systemd/                # servicio de usuario y entrada del menú (atajo)
 ```
 
 ## Créditos
 
-- [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai) y [Whisper](https://github.com/openai/whisper): voz a texto
+- [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai), [faster-whisper](https://github.com/SYSTRAN/faster-whisper) y [Whisper](https://github.com/openai/whisper): voz a texto
 - [Ollama](https://ollama.com) y [Llama 3.2](https://www.llama.com): interpretación de comandos
 - [Piper](https://github.com/OHF-Voice/piper1-gpl) y las voces de [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices): texto a voz
 
