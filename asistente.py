@@ -126,7 +126,7 @@ MSG = {
         "vol_n": "Volumen al {x} por ciento.", "vol_on": "Sonido activado.",
         "media_no": "No entendí qué hacer con la música.", "media_0": "No hay ningún reproductor abierto.",
         "perfil_no": "Los perfiles son rendimiento, equilibrado o ahorro.",
-        "perfil": "Perfil {x} activado durante una hora.", "buscando": "Buscando {x}.",
+        "perfil": "Perfil {x} activado.", "buscando": "Buscando {x}.",
         "actualizando": "Abriendo la terminal para actualizar. Escribe tu contraseña si te la pide.",
         "actualizar_no": "No sé cómo actualizar este sistema.", "actualizar_fin": "Listo. Pulsa Enter para cerrar.",
         "ollama_error": "No pude conectar con Ollama.", "no_entendi": "No te entendí.",
@@ -150,7 +150,7 @@ MSG = {
         "vol_n": "Volume at {x} percent.", "vol_on": "Sound on.",
         "media_no": "I didn't understand what to do with the music.", "media_0": "No media player is open.",
         "perfil_no": "The profiles are performance, balanced or power saver.",
-        "perfil": "{x} profile enabled for one hour.", "buscando": "Searching for {x}.",
+        "perfil": "{x} profile enabled.", "buscando": "Searching for {x}.",
         "actualizando": "Opening a terminal to update. Type your password if asked.",
         "actualizar_no": "I don't know how to update this system.", "actualizar_fin": "Done. Press Enter to close.",
         "ollama_error": "I couldn't connect to Ollama.", "no_entendi": "Sorry, I didn't understand.",
@@ -188,11 +188,13 @@ MARCAS_ES = {"abre", "abrir", "el", "la", "los", "las", "busca", "buscar", "volu
              "del", "por", "esta", "estan", "pon", "levanta", "deten", "explica", "cual", "compu", "una", "un"}
 
 
-def idioma(texto):
+def idioma(texto, detectado=None):
     p = normalizar(texto).replace("?", " ").replace(",", " ").replace(".", " ").split()
     en = sum(w in MARCAS_EN for w in p)
     es = sum(w in MARCAS_ES for w in p)
-    return "en" if en > es else "es"
+    if en != es:
+        return "en" if en > es else "es"
+    return detectado if detectado in ("es", "en") else "es"
 
 
 # --- Interfaz: sonidos, notificaciones, voz --------------------------------------
@@ -293,6 +295,29 @@ class App:
         self.id, self.nombre, self.cmd = id, nombre, cmd
 
 
+# Cómo pasa cada terminal el comando a ejecutar; las que no aparecen usan -e (konsole, alacritty, xterm…)
+ARGS_TERMINAL = {"kitty": [], "foot": [], "gnome-terminal": ["--"], "ptyxis": ["--"], "kgx": ["--"],
+                 "wezterm": ["start", "--"]}
+
+
+def cmd_terminal(*args):
+    return [TERMINAL, *ARGS_TERMINAL.get(Path(TERMINAL).name, ["-e"]), *args]
+
+
+def _firma_apps():
+    """Cambia al instalar, quitar o editar un .desktop, o al instalar una herramienta de consola."""
+    firma = []
+    for d in DIRS_DESKTOP:
+        if d.is_dir():
+            # stat() sigue los enlaces: las apps de Flatpak son enlaces que cambian al actualizarse
+            firma.append((d.stat().st_mtime, max((f.stat().st_mtime for f in d.glob("*.desktop")
+                                                  if f.exists()), default=0)))
+    return tuple(firma), tuple(bool(shutil.which(t)) for t in APPS_TERMINAL)
+
+
+_REVISION_APPS = 2.0   # segundos entre comprobaciones: resolver_app se llama varias veces por frase
+
+
 def cargar_apps():
     """Apps gráficas desde los .desktop + herramientas de consola instaladas. Devuelve {clave: App}."""
     apps, por_id = {}, {}
@@ -319,7 +344,7 @@ def cargar_apps():
             apps.setdefault(clave(id.split(".")[-1]), app)
     for tool in APPS_TERMINAL:
         if shutil.which(tool):
-            por_id[tool] = apps[tool] = App(tool, tool, [TERMINAL, tool])
+            por_id[tool] = apps[tool] = App(tool, tool, cmd_terminal(tool))
     if "kitty" in por_id:
         apps["kitty"] = por_id["kitty"]
     for alias, ids in ALIAS_APPS.items():
@@ -331,12 +356,19 @@ def cargar_apps():
 
 
 APPS = cargar_apps()
+_APPS_FIRMA, _APPS_REVISADO = _firma_apps(), time.monotonic()
 
 
 def resolver_app(nombre):
+    global APPS, _APPS_FIRMA, _APPS_REVISADO
     k = clave(nombre)
     if not k:
         return None
+    if time.monotonic() - _APPS_REVISADO > _REVISION_APPS:
+        _APPS_REVISADO = time.monotonic()
+        if (firma := _firma_apps()) != _APPS_FIRMA:
+            APPS, _APPS_FIRMA = cargar_apps(), firma
+            log(f"apps recargadas: {len({a.id for a in APPS.values()})}")
     if k in APPS:
         return APPS[k]
     # quita artículos/verbos al inicio: "la terminal", "the browser", "app de compass"
@@ -554,8 +586,11 @@ def mpris(metodo, solo_activo=False):
 
 def temperatura_cpu():
     for hw in Path("/sys/class/hwmon").iterdir():
-        if (hw / "name").read_text().strip() in ("coretemp", "k10temp", "zenpower"):   # Intel / AMD
-            return int((hw / "temp1_input").read_text()) // 1000
+        try:
+            if (hw / "name").read_text().strip() in ("coretemp", "k10temp", "zenpower"):   # Intel / AMD
+                return int((hw / "temp1_input").read_text()) // 1000
+        except OSError:
+            continue
     return None
 
 
@@ -691,7 +726,7 @@ def ejecutar(accion, param, lang):
         cmd = comando_actualizar()
         if not cmd:
             return m["actualizar_no"]
-        lanzar([TERMINAL, "bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'])
+        lanzar(cmd_terminal("bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'))
         return m["actualizando"]
 
     if accion == "pregunta":
@@ -741,7 +776,7 @@ class WhisperOpenVINO:
         raise RuntimeError("Whisper (OpenVINO) no pudo cargarse en ningún dispositivo")
 
     def transcribir(self, audio, pista):
-        return self.pipe.generate(audio.tolist(), task="transcribe", initial_prompt=pista).texts[0].strip()
+        return self.pipe.generate(audio.tolist(), task="transcribe", initial_prompt=pista).texts[0].strip(), None
 
 
 class WhisperCUDA:
@@ -767,7 +802,7 @@ class WhisperCUDA:
         lang = max(((l, p) for l, p in probabilidades if l in IDIOMAS), key=lambda x: x[1], default=(None, 0))[0]
         segmentos, _ = self.modelo.transcribe(audio, task="transcribe", language=lang, initial_prompt=pista or None,
                                               beam_size=5, condition_on_previous_text=False)
-        return "".join(s.text for s in segmentos).strip()
+        return "".join(s.text for s in segmentos).strip(), lang
 
 
 # --- Bucle principal ---------------------------------------------------------------
@@ -776,7 +811,6 @@ class Asistente:
         t = time.time()
         self.whisper = WhisperCUDA() if motor_whisper() == "cuda" else WhisperOpenVINO()
         self.voz = Voz()
-        self.pista = pista_whisper()
         self.activar = threading.Event()
         self.detener = threading.Event()
         self.escuchando = False
@@ -809,13 +843,13 @@ class Asistente:
 
         t = time.time()
         guardar_grabacion(audio)
-        # Sin language: Whisper detecta si es español o inglés
-        texto = self.whisper.transcribir(audio, self.pista)
+        # Sin language fijo: Whisper detecta si es español o inglés
+        texto, lang_stt = self.whisper.transcribir(audio, pista_whisper())
         t_stt = time.time() - t
         if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES):
             notificar("No te entendí / Didn't catch that", "", segundos=2)
             return
-        lang = idioma(texto)
+        lang = idioma(texto, lang_stt)
         notificar(f"«{texto}»", "…")
 
         t = time.time()
