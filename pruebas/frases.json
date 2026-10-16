@@ -1,0 +1,640 @@
+[
+  {
+    "frase": "Abre Firefox",
+    "accion": "abrir_app",
+    "param": "firefox",
+    "app_id": "firefox",
+    "idioma": "es"
+  },
+  {
+    "frase": "Open Firefox",
+    "accion": "abrir_app",
+    "param": "firefox",
+    "app_id": "firefox",
+    "idioma": "en"
+  },
+  {
+    "frase": "Aure, Fire, Firefox",
+    "accion": "abrir_app",
+    "param": "firefox",
+    "app_id": "firefox"
+  },
+  {
+    "frase": "ahora es Spotify.",
+    "accion": "abrir_app",
+    "param": "spotify",
+    "app_id": [
+      "spotify",
+      "com.spotify.Client"
+    ],
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre Pit Top.",
+    "accion": "abrir_app",
+    "param": "pit top",
+    "app_id": "btop",
+    "idioma": "es"
+  },
+  {
+    "frase": "abre grite,",
+    "accion": "abrir_app",
+    "param": "grite",
+    "app_id": "org.kde.kwrite",
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre Heroic Games",
+    "accion": "abrir_app",
+    "param": "heroic games",
+    "app_id": "com.heroicgameslauncher.hgl",
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre Legión Anime Full,",
+    "accion": "abrir_app",
+    "param": "legion anime full",
+    "app_id": "waydroid.aplicaciones.paleta.legionanimefull",
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre htop",
+    "accion": "abrir_app",
+    "param": "htop",
+    "app_id": "htop",
+    "idioma": "es"
+  },
+  {
+    "frase": "Cierra la ventana",
+    "accion": "cerrar_app",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Close active window",
+    "accion": "cerrar_app",
+    "param": "",
+    "idioma": "en"
+  },
+  {
+    "frase": "Cierra Firefox",
+    "accion": "cerrar_app",
+    "param": "firefox",
+    "app_id": "firefox",
+    "idioma": "es"
+  },
+  {
+    "frase": "Sierra Spotify",
+    "accion": "cerrar_app",
+    "param": "spotify",
+    "app_id": [
+      "spotify",
+      "com.spotify.Client"
+    ]
+  },
+  {
+    "frase": "Close Dolphin",
+    "accion": "cerrar_app",
+    "param": "dolphin",
+    "app_id": "org.kde.dolphin",
+    "idioma": "en"
+  },
+  {
+    "frase": "cierro esta ventana también.",
+    "accion": "cerrar_app",
+    "param": ""
+  },
+  {
+    "frase": "Cierra todas las ventanas,",
+    "accion": "cerrar_app",
+    "param": ""
+  },
+  {
+    "frase": "muestra Spotify.",
+    "accion": "abrir_app",
+    "param": "spotify",
+    "app_id": [
+      "spotify",
+      "com.spotify.Client"
+    ]
+  },
+  {
+    "frase": "también abre htop,",
+    "accion": "abrir_app",
+    "param": "htop",
+    "app_id": "htop"
+  },
+  {
+    "frase": "quiero escuchar música",
+    "accion": "multimedia",
+    "param": "reproducir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Reproduce Musical.",
+    "accion": "multimedia",
+    "param": "reproducir"
+  },
+  {
+    "frase": "Pon algo de música",
+    "accion": "multimedia",
+    "param": "reproducir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Play some music",
+    "accion": "multimedia",
+    "param": "reproducir",
+    "idioma": "en"
+  },
+  {
+    "frase": "Pausa la música",
+    "accion": "multimedia",
+    "param": "pausa",
+    "idioma": "es"
+  },
+  {
+    "frase": "Siguiente canción",
+    "accion": "multimedia",
+    "param": "siguiente",
+    "idioma": "es"
+  },
+  {
+    "frase": "Next song",
+    "accion": "multimedia",
+    "param": "siguiente",
+    "idioma": "en"
+  },
+  {
+    "frase": "Canción anterior",
+    "accion": "multimedia",
+    "param": "anterior",
+    "idioma": "es"
+  },
+  {
+    "frase": "Sube el volumen",
+    "accion": "volumen",
+    "param": "subir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Turn down the volume",
+    "accion": "volumen",
+    "param": "bajar",
+    "idioma": "en"
+  },
+  {
+    "frase": "Pon el volumen al 45%",
+    "accion": "volumen",
+    "param": "45",
+    "idioma": "es"
+  },
+  {
+    "frase": "Silencia el audio",
+    "accion": "volumen",
+    "param": "silenciar",
+    "idioma": "es"
+  },
+  {
+    "frase": "Maximiza la ventana",
+    "accion": "ventana",
+    "param": "maximizar",
+    "idioma": "es"
+  },
+  {
+    "frase": "Minimize the window",
+    "accion": "ventana",
+    "param": "minimizar",
+    "idioma": "en"
+  },
+  {
+    "frase": "Pon en pantalla completa",
+    "accion": "ventana",
+    "param": "pantalla_completa",
+    "idioma": "es"
+  },
+  {
+    "frase": "Manda la ventana a la izquierda",
+    "accion": "ventana",
+    "param": "izquierda",
+    "idioma": "es"
+  },
+  {
+    "frase": "Move window to the right",
+    "accion": "ventana",
+    "param": "derecha",
+    "idioma": "en"
+  },
+  {
+    "frase": "Manda esto a la otra pantalla",
+    "accion": "ventana",
+    "param": "otra_pantalla",
+    "idioma": "es"
+  },
+  {
+    "frase": "Muestra el escritorio",
+    "accion": "ventana",
+    "param": "mostrar_escritorio",
+    "idioma": "es"
+  },
+  {
+    "frase": "Cambia al escritorio 2",
+    "accion": "ventana",
+    "param": "escritorio_2",
+    "idioma": "es"
+  },
+  {
+    "frase": "Switch to desktop 3",
+    "accion": "ventana",
+    "param": "escritorio_3",
+    "idioma": "en"
+  },
+  {
+    "frase": "Mueve la ventana al escritorio 2",
+    "accion": "ventana",
+    "param": "mover_escritorio_2",
+    "idioma": "es"
+  },
+  {
+    "frase": "Siguiente escritorio",
+    "accion": "ventana",
+    "param": "siguiente_escritorio",
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre el proyecto validaciones",
+    "accion": "abrir_proyecto",
+    "param": "validaciones",
+    "idioma": "es"
+  },
+  {
+    "frase": "Open project asistente",
+    "accion": "abrir_proyecto",
+    "param": "asistente",
+    "idioma": "en"
+  },
+  {
+    "frase": "Ejecuta la tarea tests de validaciones",
+    "accion": "ejecutar_tarea",
+    "param": "tests de validaciones",
+    "tarea": "tests de validaciones",
+    "idioma": "es"
+  },
+  {
+    "frase": "Run task build backend",
+    "accion": "ejecutar_tarea",
+    "param": "build backend",
+    "tarea": "build backend",
+    "idioma": "en"
+  },
+  {
+    "frase": "Levanta los contenedores de Docker",
+    "accion": "docker_levantar",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Detén los contenedores",
+    "accion": "docker_detener",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Estado de Docker",
+    "accion": "docker_estado",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Estado del sistema",
+    "accion": "estado_sistema",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Cuánta RAM libre tengo?",
+    "accion": "estado_sistema",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Modo rendimiento",
+    "accion": "perfil_energia",
+    "param": "rendimiento",
+    "idioma": "es"
+  },
+  {
+    "frase": "Power saver mode",
+    "accion": "perfil_energia",
+    "param": "ahorro",
+    "idioma": "en"
+  },
+  {
+    "frase": "Busca en internet documentación de PipeWire",
+    "accion": "buscar_web",
+    "param": "documentación de PipeWire",
+    "idioma": "es"
+  },
+  {
+    "frase": "Bloquea la pantalla",
+    "accion": "bloquear_pantalla",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Actualiza el sistema",
+    "accion": "actualizar_sistema",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Update the system",
+    "accion": "actualizar_sistema",
+    "param": "",
+    "idioma": "en"
+  },
+  {
+    "frase": "¿Qué es un contenedor de Linux?",
+    "accion": "pregunta",
+    "param": "¿Qué es un contenedor de Linux?",
+    "idioma": "es"
+  },
+  {
+    "frase": "What is a deadlock in operating systems?",
+    "accion": "pregunta",
+    "param": "What is a deadlock in operating systems?",
+    "idioma": "en"
+  },
+  {
+    "frase": "Gracias.",
+    "accion": "no_entendido",
+    "param": ""
+  },
+  {
+    "frase": "Subtítulos realizados por la comunidad de Amara.org",
+    "accion": "no_entendido",
+    "param": ""
+  },
+  {
+    "frase": "Lee el portapapeles",
+    "accion": "portapapeles",
+    "param": "leer",
+    "idioma": "es"
+  },
+  {
+    "frase": "Resume lo que copié",
+    "accion": "portapapeles",
+    "param": "resumir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Traduce el portapapeles",
+    "accion": "portapapeles",
+    "param": "traducir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Explica este error que tengo copiado",
+    "accion": "portapapeles",
+    "param": "explicar",
+    "idioma": "es"
+  },
+  {
+    "frase": "Read the clipboard",
+    "accion": "portapapeles",
+    "param": "leer",
+    "idioma": "en"
+  },
+  {
+    "frase": "Pon un temporizador de 10 minutos",
+    "accion": "temporizador",
+    "param": "600",
+    "idioma": "es"
+  },
+  {
+    "frase": "Avísame en 30 segundos",
+    "accion": "temporizador",
+    "param": "30",
+    "idioma": "es"
+  },
+  {
+    "frase": "Set a timer for 5 minutes",
+    "accion": "temporizador",
+    "param": "300",
+    "idioma": "en"
+  },
+  {
+    "frase": "Sube el brillo",
+    "accion": "brillo",
+    "param": "subir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Pon el brillo al 60%",
+    "accion": "brillo",
+    "param": "60",
+    "idioma": "es"
+  },
+  {
+    "frase": "Activa la luz nocturna",
+    "accion": "brillo",
+    "param": "luz_nocturna_on",
+    "idioma": "es"
+  },
+  {
+    "frase": "Turn off night light",
+    "accion": "brillo",
+    "param": "luz_nocturna_off",
+    "idioma": "en"
+  },
+  {
+    "frase": "Haz sonar mi teléfono",
+    "accion": "telefono",
+    "param": "sonar",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Cuánta batería tiene mi celular?",
+    "accion": "telefono",
+    "param": "bateria",
+    "idioma": "es"
+  },
+  {
+    "frase": "Envía el portapapeles al teléfono",
+    "accion": "telefono",
+    "param": "portapapeles",
+    "idioma": "es"
+  },
+  {
+    "frase": "Dicta hola mundo desde el asistente",
+    "accion": "dictar",
+    "param": "hola mundo desde el asistente",
+    "idioma": "es"
+  },
+  {
+    "frase": "Estado de git en validaciones",
+    "accion": "git_proyecto",
+    "param": "estado:validaciones",
+    "idioma": "es"
+  },
+  {
+    "frase": "Último commit de asistente",
+    "accion": "git_proyecto",
+    "param": "commit:asistente",
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre una terminal en el proyecto validaciones",
+    "accion": "terminal_proyecto",
+    "param": "terminal:validaciones",
+    "idioma": "es"
+  },
+  {
+    "frase": "Abre lazygit en el proyecto validaciones",
+    "accion": "terminal_proyecto",
+    "param": "lazygit:validaciones",
+    "idioma": "es"
+  },
+  {
+    "frase": "Muestra los logs de mongo",
+    "accion": "docker_logs",
+    "param": "mongo",
+    "idioma": "es"
+  },
+  {
+    "frase": "Reinicia el contenedor redis",
+    "accion": "docker_reiniciar",
+    "param": "redis",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Qué proceso consume más memoria?",
+    "accion": "diagnostico",
+    "param": "memoria",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Qué proceso usa más CPU?",
+    "accion": "diagnostico",
+    "param": "cpu",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Qué corre en el puerto 5000?",
+    "accion": "diagnostico",
+    "param": "puerto:5000",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Qué puertos están abiertos?",
+    "accion": "diagnostico",
+    "param": "puertos",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Cuántos paquetes hay por actualizar?",
+    "accion": "diagnostico",
+    "param": "actualizaciones",
+    "idioma": "es"
+  },
+  {
+    "frase": "Resúmenme lo que copié",
+    "accion": "portapapeles",
+    "param": "resumir",
+    "idioma": "es"
+  },
+  {
+    "frase": "Léame el portapapeles",
+    "accion": "portapapeles",
+    "param": "leer",
+    "idioma": "es"
+  },
+  {
+    "frase": "Estado Git, asistente-voz",
+    "accion": "git_proyecto",
+    "param": "estado:asistente-voz",
+    "idioma": "es"
+  },
+  {
+    "frase": "Stargit, asistente-voz",
+    "accion": "git_proyecto",
+    "param": "estado:asistente-voz",
+    "idioma": "es"
+  },
+  {
+    "frase": "Haz un comí de git en asistente de voz",
+    "accion": "git_proyecto",
+    "param": "commit:asistente de voz",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Cuál es el uso de la GPU?",
+    "accion": "estado_sistema",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Escribe, hola mundo",
+    "accion": "dictar",
+    "param": "hola mundo",
+    "idioma": "es"
+  },
+  {
+    "frase": "¿Cuál es el estado de la compu?",
+    "accion": "estado_sistema",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Estado de la batería",
+    "accion": "estado_sistema",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Status of my computer",
+    "accion": "estado_sistema",
+    "param": "",
+    "idioma": "en"
+  },
+  {
+    "frase": "Reinicia la computadora",
+    "accion": "no_entendido",
+    "param": ""
+  },
+  {
+    "frase": "Reinicia spotify",
+    "accion": "no_entendido",
+    "param": ""
+  },
+  {
+    "frase": "Avísame en cinco minutos",
+    "accion": "temporizador",
+    "param": "300"
+  },
+  {
+    "frase": "Pon un temporizador de media hora",
+    "accion": "temporizador",
+    "param": "1800"
+  },
+  {
+    "frase": "Avísame en veinticinco minutos que saque la ropa",
+    "accion": "temporizador",
+    "param": "1500:saque la ropa"
+  },
+  {
+    "frase": "Avísame dentro de treinta y cinco segundos",
+    "accion": "temporizador",
+    "param": "35"
+  },
+  {
+    "frase": "Set a timer for five minutes",
+    "accion": "temporizador",
+    "param": "300"
+  },
+  {
+    "frase": "Remind me in an hour",
+    "accion": "temporizador",
+    "param": "3600"
+  }
+]

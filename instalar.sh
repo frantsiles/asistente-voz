@@ -88,6 +88,17 @@ for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medi
     for ext in ["", ".json"]:
         if not (dst / "voces" / (voz + ext)).exists():
             hf_hub_download("rhasspy/piper-voices", voz + ext, local_dir=dst / "voces")
+vad_dst = dst / "silero_vad_v6.onnx"
+if not vad_dst.exists():
+    try:
+        import shutil, faster_whisper.vad as v
+        shutil.copy2(Path(v.get_assets_path()) / "silero_vad_v6.onnx", vad_dst)
+    except Exception:
+        import urllib.request
+        urllib.request.urlretrieve(
+            "https://raw.githubusercontent.com/SYSTRAN/faster-whisper/v1.2.1/faster_whisper/assets/silero_vad_v6.onnx",
+            vad_dst,
+        )
 EOF
 
 echo "==> Configuración"

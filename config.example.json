@@ -4,6 +4,8 @@
   "terminal": "kitty",
   "apps_terminal": ["htop", "btop", "nvtop", "lazygit", "lazydocker", "k9s"],
   "alias_apps": {"mongo": "com.mongodb.Compass"},
+  "tareas": {},
+  "confirmar": ["docker_detener", "docker_reiniciar"],
   "modelo_comandos": "llama3.2",
   "modelo_preguntas": "llama3.2",
   "whisper": "auto",

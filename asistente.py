@@ -14,7 +14,9 @@ import configparser
 import difflib
 import json
 import os
+import queue
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -26,6 +28,7 @@ import unicodedata
 import urllib.request
 import wave
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from piper import PiperVoice
@@ -44,6 +47,9 @@ def _cargar_config():
 
 
 CFG = _cargar_config()
+CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps", "tareas", "confirmar",
+              "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
+              "whisper_precision", "comando_actualizar", "hablar"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
 WHISPER_MOTOR = CFG.get("whisper", "auto")
@@ -74,6 +80,10 @@ COMPOSE = Path(CFG["compose"]).expanduser() if CFG.get("compose") else None  # d
 TERMINAL = CFG.get("terminal", "kitty")
 # Comando para "actualiza todo". Por defecto se detecta: yay/paru/pacman (Arch) o dnf (Fedora), + flatpak
 COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
+# Tareas de desarrollo permitidas (nombre -> comando que se ejecuta en la terminal)
+TAREAS = {k.strip(): v for k, v in CFG.get("tareas", {}).items() if isinstance(v, str) and v.strip()}
+# Acciones sensibles que piden confirmación por voz de 1 paso («¿Confirmas…?» -> «sí»)
+CONFIRMAR = set(CFG.get("confirmar", ["docker_detener", "docker_reiniciar"]))
 APPS_TERMINAL = CFG.get("apps_terminal", ["htop", "btop", "top", "nvtop", "lazygit", "lazydocker", "k9s",
                                           "ranger", "yazi", "ncdu"])
 
@@ -94,13 +104,15 @@ ALIAS_APPS = {
     **dict.fromkeys(["calculadora", "calculator"], "org.kde.kcalc"),
     **dict.fromkeys(["edge", "microsoftedge"], ("microsoft-edge", "com.microsoft.Edge")),
     **dict.fromkeys(["hetop", "hitop", "achetop"], "htop"),
+    **dict.fromkeys(["btop", "betop", "bitop", "pittop", "vitop"], "btop"),
+    **dict.fromkeys(["kwrite", "write", "grite", "kwriter"], "org.kde.kwrite"),
     **CFG.get("alias_apps", {}),
 }
 DIRS_DESKTOP = [HOME / ".local/share/applications", HOME / ".local/share/flatpak/exports/share/applications",
                 Path("/var/lib/flatpak/exports/share/applications"), Path("/usr/share/applications")]
 
 RATE = 16000
-BLOQUE = 480                  # 30 ms
+BLOQUE = 512                  # 32 ms (tamaño de ventana de Silero VAD a 16 kHz)
 ESPERA_INICIO = 5.0           # segundos esperando a que empieces a hablar
 SILENCIO_FIN = 1.0            # segundos de silencio que cierran la frase
 MAX_GRABACION = 15.0
@@ -116,14 +128,48 @@ ALUCINACIONES = ("amara.org", "subtitulos", "gracias por ver", "suscribete", "gr
 # --- Textos de respuesta -----------------------------------------------------------
 MSG = {
     "es": {
-        "app_no": "No encontré la aplicación {x}.", "abriendo": "Abriendo {x}.",
+        "app_no": "No encontré la aplicación {x}.", "abriendo": "Abriendo {x}.", "cerrando": "Cerrando {x}.",
         "proyecto_no": "No encontré un proyecto parecido a {x}.", "proyecto": "Abriendo {x} en Visual Studio Code.",
+        "proyecto_term": "Abriendo {t} en {x}.",
+        "git_estado": "En {x}, rama {r}{cambios}{sync}.",
+        "git_limpio": ", sin cambios pendientes",
+        "git_cambios": ", con {n} archivos modificados",
+        "git_subir": ", {n} commits por subir", "git_bajar": ", {n} commits por bajar",
+        "git_commit": "Último commit en {x}: {c}.",
+        "tarea": "Ejecutando {x}.", "tarea_no": "No encontré la tarea {x}.",
         "docker_0": "No hay contenedores corriendo.", "docker_n": "Hay {n} contenedores corriendo: {x}.",
         "docker_up": "Levantando contenedores…", "docker_stop": "Deteniendo contenedores…",
         "docker_up_ok": "Contenedores levantados.", "docker_stop_ok": "Contenedores detenidos.",
         "docker_error": "Docker compose falló, revisa el registro.",
         "docker_sin_compose": "No hay un archivo docker compose configurado.",
+        "docker_cont_no": "No encontré el contenedor {x}.",
+        "docker_logs": "Abriendo registros de {x}.",
+        "docker_restart": "Contenedor {x} reiniciado.",
+        "confirmar_docker_detener": "¿Confirmas detener los contenedores?",
+        "confirmar_docker_reiniciar": "¿Confirmas reiniciar el contenedor?",
+        "cancelado": "Cancelado.",
         "vol_n": "Volumen al {x} por ciento.", "vol_on": "Sonido activado.",
+        "brillo_n": "Brillo al {x} por ciento.", "brillo_no": "Este monitor no permite ajustar el brillo por software.",
+        "luz_nocturna_on": "Luz nocturna activada.", "luz_nocturna_off": "Luz nocturna desactivada.",
+        "luz_nocturna_toggle": "Luz nocturna alternada.",
+        "clip_vacio": "El portapapeles está vacío.",
+        "clip_secreto": "Lo que copiaste parece una contraseña, no lo leo en voz alta.",
+        "clip_prompt_resumir": "Resume en español en máximo 2 frases cortas el siguiente texto:\n\n{x}",
+        "clip_prompt_traducir": "Traduce al español (o al inglés si ya está en español) el siguiente texto, sin explicaciones adicionales:\n\n{x}",
+        "clip_prompt_explicar": "Explica en español en máximo 3 frases cortas qué hace o significa esto (sin markdown ni bloques de código):\n\n{x}",
+        "dictado_ok": "Copiado al portapapeles (Ctrl+V): {x}",
+        "timer_ok": "Temporizador de {t} activado.", "timer_fin": "Temporizador finalizado: {x}",
+        "timer_no": "No entendí la duración del temporizador.",
+        "tel_no": "El teléfono no está conectado.",
+        "tel_sonar": "Haciendo sonar {x}.",
+        "tel_bat": "La batería de {x} está al {b} por ciento{c}.",
+        "tel_cargando": " y cargando",
+        "tel_clip": "Portapapeles enviado a {x}.",
+        "top_proc": "Los procesos que más consumen son: {x}.",
+        "puerto_uso": "En el puerto {p} corre {x}.", "puerto_libre": "No hay nada escuchando en el puerto {p}.",
+        "puertos_lista": "Puertos activos: {x}.", "puertos_ninguno": "No encontré puertos de desarrollo abiertos.",
+        "updates_0": "El sistema está al día, no hay actualizaciones pendientes.",
+        "updates_n": "Hay {n} paquetes por actualizar.",
         "media_no": "No entendí qué hacer con la música.", "media_0": "No hay ningún reproductor abierto.",
         "perfil_no": "Los perfiles son rendimiento, equilibrado o ahorro.",
         "perfil": "Perfil {x} activado.", "buscando": "Buscando {x}.",
@@ -132,22 +178,58 @@ MSG = {
         "ollama_error": "No pude conectar con Ollama.", "no_entendi": "No te entendí.",
         "fallo": "Algo falló al ejecutar el comando.", "pensando": "Pensando…",
         "estado": "El procesador está a {t} grados{gpu}, usas {u:.0f} de {m:.0f} gigas de memoria, "
-                  "el disco tiene {d:.0f} gigas libres, y el perfil de energía es {p}.",
-        "gpu": ", la tarjeta gráfica a {t} grados",
+                  "el disco tiene {d:.0f} gigas libres{bat}{red}, y el perfil de energía es {p}.",
+        "gpu": ", la gráfica a {t} grados ({uso}% de uso y {vram:.1f} gigas de VRAM)",
+        "bat": ", batería al {b}%",
+        "red": ", conectado a {r}",
         "perfiles": {"performance": "rendimiento", "balanced": "equilibrado", "quiet": "silencioso", "cool": "fresco",
                      "power-saver": "ahorro"},
         "responde": "Responde en español, en máximo 3 frases cortas. El texto se leerá en voz alta: "
                     "sin markdown, sin listas, sin bloques de código.",
     },
     "en": {
-        "app_no": "I couldn't find the application {x}.", "abriendo": "Opening {x}.",
+        "app_no": "I couldn't find the application {x}.", "abriendo": "Opening {x}.", "cerrando": "Closing {x}.",
         "proyecto_no": "I couldn't find a project like {x}.", "proyecto": "Opening {x} in Visual Studio Code.",
+        "proyecto_term": "Opening {t} in {x}.",
+        "git_estado": "In {x}, branch {r}{cambios}{sync}.",
+        "git_limpio": ", working tree clean",
+        "git_cambios": ", with {n} modified files",
+        "git_subir": ", {n} commits to push", "git_bajar": ", {n} commits to pull",
+        "git_commit": "Last commit in {x}: {c}.",
+        "tarea": "Running {x}.", "tarea_no": "I couldn't find the task {x}.",
         "docker_0": "No containers are running.", "docker_n": "There are {n} containers running: {x}.",
         "docker_up": "Starting containers…", "docker_stop": "Stopping containers…",
         "docker_up_ok": "Containers started.", "docker_stop_ok": "Containers stopped.",
         "docker_error": "Docker compose failed, check the log.",
         "docker_sin_compose": "No docker compose file is configured.",
+        "docker_cont_no": "I couldn't find the container {x}.",
+        "docker_logs": "Opening logs for {x}.",
+        "docker_restart": "Container {x} restarted.",
+        "confirmar_docker_detener": "Do you confirm stopping the containers?",
+        "confirmar_docker_reiniciar": "Do you confirm restarting the container?",
+        "cancelado": "Cancelled.",
         "vol_n": "Volume at {x} percent.", "vol_on": "Sound on.",
+        "brillo_n": "Brightness at {x} percent.", "brillo_no": "This display does not support software brightness control.",
+        "luz_nocturna_on": "Night light enabled.", "luz_nocturna_off": "Night light disabled.",
+        "luz_nocturna_toggle": "Night light toggled.",
+        "clip_vacio": "The clipboard is empty.",
+        "clip_secreto": "What you copied looks like a password, so I won't read it aloud.",
+        "clip_prompt_resumir": "Summarize the following text in English in at most 2 short sentences:\n\n{x}",
+        "clip_prompt_traducir": "Translate the following text into English (or Spanish if it is already in English), without extra commentary:\n\n{x}",
+        "clip_prompt_explicar": "Explain in English in at most 3 short sentences what this does or means (no markdown or code blocks):\n\n{x}",
+        "dictado_ok": "Copied to clipboard (Ctrl+V): {x}",
+        "timer_ok": "Timer set for {t}.", "timer_fin": "Timer finished: {x}",
+        "timer_no": "I didn't understand the timer duration.",
+        "tel_no": "The phone is not connected.",
+        "tel_sonar": "Ringing {x}.",
+        "tel_bat": "{x} battery is at {b} percent{c}.",
+        "tel_cargando": " and charging",
+        "tel_clip": "Clipboard sent to {x}.",
+        "top_proc": "Top resource processes are: {x}.",
+        "puerto_uso": "Port {p} is running {x}.", "puerto_libre": "Nothing is listening on port {p}.",
+        "puertos_lista": "Active ports: {x}.", "puertos_ninguno": "No open development ports found.",
+        "updates_0": "The system is up to date, no pending updates.",
+        "updates_n": "There are {n} packages to update.",
         "media_no": "I didn't understand what to do with the music.", "media_0": "No media player is open.",
         "perfil_no": "The profiles are performance, balanced or power saver.",
         "perfil": "{x} profile enabled.", "buscando": "Searching for {x}.",
@@ -156,8 +238,10 @@ MSG = {
         "ollama_error": "I couldn't connect to Ollama.", "no_entendi": "Sorry, I didn't understand.",
         "fallo": "Something went wrong running the command.", "pensando": "Thinking…",
         "estado": "The CPU is at {t} degrees{gpu}, you're using {u:.0f} of {m:.0f} gigabytes of memory, "
-                  "the disk has {d:.0f} gigabytes free, and the power profile is {p}.",
-        "gpu": ", the graphics card at {t} degrees",
+                  "the disk has {d:.0f} gigabytes free{bat}{red}, and the power profile is {p}.",
+        "gpu": ", graphics card at {t} degrees ({uso}% load and {vram:.1f} gigabytes VRAM)",
+        "bat": ", battery at {b}%",
+        "red": ", connected to {r}",
         "perfiles": {"performance": "performance", "balanced": "balanced", "quiet": "quiet", "cool": "cool",
                      "power-saver": "power saver"},
         "responde": "Answer in English, in at most 3 short sentences. The text will be read aloud: "
@@ -170,6 +254,23 @@ def log(msg):
     print(msg, flush=True)
 
 
+def validar_config():
+    """Comprueba claves desconocidas, rutas y herramientas configuradas en config.json."""
+    avisos = []
+    desconocidas = sorted(set(CFG) - CLAVES_CFG)
+    if desconocidas:
+        avisos.append(f"claves desconocidas en config.json: {', '.join(desconocidas)}")
+    if not PROYECTOS.is_dir():
+        avisos.append(f"la carpeta de proyectos no existe: {PROYECTOS}")
+    if COMPOSE and not COMPOSE.is_file():
+        avisos.append(f"el archivo compose no existe: {COMPOSE}")
+    if not shutil.which(TERMINAL):
+        avisos.append(f"la terminal configurada ({TERMINAL!r}) no está instalada")
+    for a in avisos:
+        log(f"AVISO config: {a}")
+    return avisos
+
+
 def normalizar(texto):
     t = unicodedata.normalize("NFD", texto.lower())
     return "".join(c for c in t if unicodedata.category(c) != "Mn")
@@ -179,13 +280,14 @@ def clave(texto):
     return re.sub(r"[^a-z0-9]", "", normalizar(texto))
 
 
-MARCAS_EN = {"open", "launch", "start", "run", "the", "search", "for", "volume", "turn", "up", "down", "mute",
-             "unmute", "what", "how", "is", "are", "running", "containers", "lock", "screen", "play", "pause",
-             "next", "previous", "song", "music", "stop", "show", "status", "mode", "power", "project", "my",
-             "please", "explain", "why", "who", "can", "you", "set", "to", "internet", "computer", "doing"}
-MARCAS_ES = {"abre", "abrir", "el", "la", "los", "las", "busca", "buscar", "volumen", "sube", "baja", "que",
-             "como", "contenedores", "proyecto", "pantalla", "musica", "cancion", "pausa", "modo", "en", "de",
-             "del", "por", "esta", "estan", "pon", "levanta", "deten", "explica", "cual", "compu", "una", "un"}
+MARCAS_EN = {"open", "launch", "start", "run", "close", "the", "search", "for", "volume", "turn", "up", "down",
+             "mute", "unmute", "what", "how", "is", "are", "running", "containers", "lock", "screen", "play",
+             "pause", "next", "previous", "song", "music", "stop", "show", "status", "mode", "power", "project",
+             "my", "please", "explain", "why", "who", "can", "you", "set", "to", "internet", "computer", "doing"}
+MARCAS_ES = {"abre", "abrir", "cierra", "cerrar", "el", "la", "los", "las", "busca", "buscar", "volumen", "sube",
+             "baja", "que", "como", "contenedores", "proyecto", "pantalla", "musica", "cancion", "pausa", "modo",
+             "en", "de", "del", "por", "esta", "estan", "pon", "levanta", "deten", "explica", "cual", "compu",
+             "una", "un"}
 
 
 def idioma(texto, detectado=None):
@@ -218,27 +320,189 @@ def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6):
     _notif_id = r.stdout.strip() or None
 
 
+_voz_activa = None
+
+
 class Voz:
     def __init__(self):
+        global _voz_activa
         self.voces = {k: PiperVoice.load(str(v)) for k, v in VOCES.items() if v.exists()} if HABLAR else {}
+        self._proc = None
+        self._interrumpido = threading.Event()
+        self._activa = False      # True durante toda una respuesta, también entre oraciones
+        self._cancelar_stream = threading.Event()
+        self._lock = threading.Lock()   # el aviso de un temporizador y una respuesta no se pisan
+        _voz_activa = self
+
+    @property
+    def hablando(self):
+        return self._activa or (self._proc is not None and self._proc.poll() is None)
+
+    def callar(self):
+        """Interrumpe la síntesis/reproducción en curso (barge-in)."""
+        self._interrumpido.set()
+        self._cancelar_stream.set()
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+
+    def _reproducir_wav(self, archivo):
+        if self._interrumpido.is_set():
+            return
+        self._proc = subprocess.Popen(["pw-play", str(archivo)], stderr=subprocess.DEVNULL)
+        self._proc.wait()
 
     def decir(self, texto, lang):
         voz = self.voces.get(lang) or self.voces.get("es")
-        if not voz:
+        if not voz or not texto:
             return
-        archivo = RUNTIME / "asistente-voz.wav"
-        with wave.open(str(archivo), "wb") as w:
-            voz.synthesize_wav(texto, w)
-        subprocess.run(["pw-play", str(archivo)], stderr=subprocess.DEVNULL)
+        with self._lock:
+            self._interrumpido.clear()
+            self._activa = True
+            try:
+                archivo = RUNTIME / "asistente-voz.wav"
+                with wave.open(str(archivo), "wb") as w:
+                    voz.synthesize_wav(texto, w)
+                self._reproducir_wav(archivo)
+            finally:
+                self._activa = False
+
+    def decir_stream(self, oraciones, lang, al_avanzar=None):
+        """Sintetiza oración por oración en paralelo a la reproducción para reducir la latencia."""
+        voz = self.voces.get(lang) or self.voces.get("es")
+        # 3 archivos y cola de 1: mientras suena el archivo k, la cola guarda k+1 y se sintetiza k+2.
+        # Con 2 archivos, la síntesis (más rápida que la reproducción) pisaba el que estaba sonando.
+        cola = queue.Queue(maxsize=1)
+        acumulado, errores = [], []
+        # Propio de esta respuesta: si se interrumpe, el productor termina aunque luego empiece otra
+        cancelar = self._cancelar_stream = threading.Event()
+
+        def poner(item):
+            while not cancelar.is_set():
+                try:
+                    cola.put(item, timeout=0.1)
+                    return
+                except queue.Full:
+                    pass
+
+        def productor():
+            try:
+                for oracion in oraciones:
+                    if cancelar.is_set():
+                        break
+                    oracion = oracion.strip()
+                    if not oracion:
+                        continue
+                    acumulado.append(oracion)
+                    if al_avanzar:
+                        al_avanzar(" ".join(acumulado))
+                    if voz:
+                        wav = RUNTIME / f"asistente-voz-{len(acumulado) % 3}.wav"   # solo cuenta las no vacías
+                        with wave.open(str(wav), "wb") as w:
+                            voz.synthesize_wav(oracion, w)
+                        poner(wav)
+            except Exception as e:      # p. ej. Ollama caído: se relanza en el hilo principal
+                errores.append(e)
+            finally:
+                poner(None)
+
+        with self._lock:
+            self._interrumpido.clear()
+            self._activa = True
+            try:
+                hilo = threading.Thread(target=productor, daemon=True)
+                hilo.start()
+                while not cancelar.is_set():
+                    try:
+                        wav = cola.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if wav is None:
+                        break
+                    self._reproducir_wav(wav)
+                hilo.join(timeout=0.2)   # si sigue esperando a Ollama, termina solo al ver «cancelar»
+            finally:
+                self._activa = False
+        if errores and not acumulado:
+            raise errores[0]
+        return " ".join(acumulado)
 
 
-# --- Audio -----------------------------------------------------------------------
-def grabar(detener):
+# --- Audio y detección de voz (Silero VAD) ---------------------------------------
+class SileroVAD:
+    """Detector de actividad de voz con Silero VAD v6 (ONNX). Distingue voz humana de música y ruido."""
+    def __init__(self):
+        self.session = None
+        try:
+            import onnxruntime
+            candidatas = [BASE / "modelos/silero_vad_v6.onnx"]
+            try:
+                import faster_whisper.vad as fw_vad
+                candidatas.append(Path(fw_vad.get_assets_path()) / "silero_vad_v6.onnx")
+            except Exception:
+                pass
+            ruta = next((p for p in candidatas if p.is_file()), None)
+            if not ruta:
+                return
+            opts = onnxruntime.SessionOptions()
+            opts.inter_op_num_threads = 1
+            opts.intra_op_num_threads = 1
+            opts.enable_cpu_mem_arena = False
+            opts.log_severity_level = 4
+            self.session = onnxruntime.InferenceSession(str(ruta), providers=["CPUExecutionProvider"], sess_options=opts)
+        except Exception as e:
+            log(f"Silero VAD no disponible, usando umbral RMS: {e}")
+
+    def nuevo_estado(self):
+        return (np.zeros((1, 1, 128), dtype=np.float32),
+                np.zeros((1, 1, 128), dtype=np.float32),
+                np.zeros((1, 64), dtype=np.float32))
+
+    def probabilidad(self, bloque_int16, estado):
+        h, c, ctx = estado
+        chunk = (bloque_int16.astype(np.float32) / 32768.0).reshape(1, -1)
+        if chunk.shape[1] < BLOQUE:
+            chunk = np.pad(chunk, ((0, 0), (0, BLOQUE - chunk.shape[1])))
+        inp = np.concatenate([ctx, chunk[:, :BLOQUE]], axis=1)
+        out, h, c = self.session.run(None, {"input": inp, "h": h, "c": c})
+        return float(out.squeeze()), (h, c, chunk[:, BLOQUE - 64:BLOQUE])
+
+
+_VAD = SileroVAD()
+
+
+VOLUMEN_GUARDADO = RUNTIME / "asistente-voz-volumen"
+
+
+def _volumen_sistema():
+    r = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True)
+    m = re.search(r"Volume:\s*([0-9.]+)", r.stdout)
+    return float(m.group(1)) if m and "[MUTED]" not in r.stdout else None
+
+
+def _restaurar_volumen(vol=None):
+    """Devuelve el volumen de antes de escuchar. Sin argumento, el que quedó guardado si el servicio
+    murió mientras grababa (si no, el sistema se quedaría al 20 %)."""
+    if vol is None:
+        try:
+            vol = float(VOLUMEN_GUARDADO.read_text())
+        except (OSError, ValueError):
+            return
+        log(f"restaurando el volumen que quedó bajado: {vol:.2f}")
+    subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{vol:.2f}"])
+    VOLUMEN_GUARDADO.unlink(missing_ok=True)
+
+
+def grabar(detener, espera_inicio=ESPERA_INICIO):
     """Graba del micrófono por defecto hasta detectar el fin de la frase."""
+    vol_prev = _volumen_sistema()
+    if vol_prev and vol_prev > 0.20:
+        VOLUMEN_GUARDADO.write_text(str(vol_prev))
+        subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "0.20"])
     p = subprocess.Popen(["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     bloques, ruido = [], []
     hablando, silencio, umbral = False, 0.0, 400.0
+    estado_vad = _VAD.nuevo_estado() if _VAD.session else None
     try:
         while not detener.is_set():
             data = p.stdout.read(BLOQUE * 2)
@@ -246,26 +510,34 @@ def grabar(detener):
                 break
             a = np.frombuffer(data, np.int16)
             bloques.append(a)
-            rms = float(np.sqrt(np.mean(a.astype(np.float32) ** 2)))
             t = len(bloques) * BLOQUE / RATE
-            if t < 0.3:                       # calibración del ruido de fondo
-                ruido.append(rms)
-                # percentil bajo: el sonido de inicio se cuela en los primeros bloques
-                umbral = max(400.0, 3 * float(np.percentile(ruido, 20)))
-                continue
-            if rms > umbral:
+            if estado_vad is not None:
+                prob, estado_vad = _VAD.probabilidad(a, estado_vad)
+                if t < 0.15:                  # descarta el eco inmediato del sonido de inicio
+                    continue
+                hay_voz = prob >= 0.5
+            else:
+                rms = float(np.sqrt(np.mean(a.astype(np.float32) ** 2)))
+                if t < 0.3:                   # calibración del ruido de fondo (fallback sin ONNX)
+                    ruido.append(rms)
+                    umbral = max(400.0, 3 * float(np.percentile(ruido, 20)))
+                    continue
+                hay_voz = rms > umbral
+            if hay_voz:
                 hablando, silencio = True, 0.0
             elif hablando:
                 silencio += BLOQUE / RATE
             if hablando and silencio >= SILENCIO_FIN:
                 break
-            if not hablando and t > ESPERA_INICIO:
+            if not hablando and t > espera_inicio:
                 return None
             if t > MAX_GRABACION:
                 break
     finally:
         p.terminate()
         p.wait()
+        if vol_prev and vol_prev > 0.20:
+            _restaurar_volumen(vol_prev)
     if not hablando and not detener.is_set():
         return None
     audio = np.concatenate(bloques)
@@ -296,8 +568,9 @@ class App:
 
 
 # Cómo pasa cada terminal el comando a ejecutar; las que no aparecen usan -e (konsole, alacritty, xterm…)
-ARGS_TERMINAL = {"kitty": [], "foot": [], "gnome-terminal": ["--"], "ptyxis": ["--"], "kgx": ["--"],
-                 "wezterm": ["start", "--"]}
+# En kitty se desactiva la confirmación al cerrar ventana para que «cierra la ventana» / «cierra htop» funcione directo
+ARGS_TERMINAL = {"kitty": ["-o", "confirm_os_window_close=0"], "foot": [], "gnome-terminal": ["--"],
+                 "ptyxis": ["--"], "kgx": ["--"], "wezterm": ["start", "--"]}
 
 
 def cmd_terminal(*args):
@@ -316,32 +589,42 @@ def _firma_apps():
 
 
 _REVISION_APPS = 2.0   # segundos entre comprobaciones: resolver_app se llama varias veces por frase
+# Apps base de Android en Waydroid que duplican utilidades de KDE (calculadora, ajustes, reloj…)
+WAYDROID_IGNORAR = ("Waydroid", "waydroid.app.install", "waydroid.market",
+                    "waydroid.com.android.", "waydroid.org.lineageos.", "waydroid.com.google.android.")
+ID_PARTES_GENERICAS = {"desktop", "app", "client", "launcher", "hgl"}
 
 
 def cargar_apps():
     """Apps gráficas desde los .desktop + herramientas de consola instaladas. Devuelve {clave: App}."""
     apps, por_id = {}, {}
-    for d in DIRS_DESKTOP:
-        for f in sorted(d.glob("*.desktop")):
-            id = f.stem
-            if id in por_id or id.startswith("waydroid.") or id == "asistente-voz":
-                continue
-            cp = configparser.ConfigParser(interpolation=None, strict=False)
-            try:
-                cp.read(f, encoding="utf-8")
-                e = cp["Desktop Entry"]
-            except Exception:
-                continue
-            if e.get("Type") != "Application" or e.get("NoDisplay") == "true" or e.get("Hidden") == "true":
-                continue
-            if e.get("Terminal") == "true":
-                continue                      # las de consola se manejan con APPS_TERMINAL
-            app = App(id, e.get("Name", id), ["kioclient", "exec", str(f)])
-            por_id[id] = app
-            for k in ("Name", "Name[es]", "GenericName", "GenericName[es]"):
-                if e.get(k):
-                    apps.setdefault(clave(e[k]), app)
-            apps.setdefault(clave(id.split(".")[-1]), app)
+    archivos = [f for d in DIRS_DESKTOP if d.is_dir() for f in sorted(d.glob("*.desktop"))]
+    # Las apps nativas van primero; las de Waydroid al final para no pisar nombres genéricos
+    for f in sorted(archivos, key=lambda p: p.stem.startswith("waydroid.")):
+        id = f.stem
+        if id in por_id or id == "asistente-voz" or id.startswith(WAYDROID_IGNORAR):
+            continue
+        cp = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            cp.read(f, encoding="utf-8")
+            e = cp["Desktop Entry"]
+        except Exception:
+            continue
+        if e.get("Type") != "Application" or e.get("NoDisplay") == "true" or e.get("Hidden") == "true":
+            continue
+        if e.get("Terminal") == "true":
+            continue                      # las de consola se manejan con APPS_TERMINAL
+        app = App(id, e.get("Name", id), ["kioclient", "exec", str(f)])
+        por_id[id] = app
+        for k in ("Name", "Name[es]", "GenericName", "GenericName[es]"):
+            if e.get(k):
+                ck = clave(e[k])
+                apps.setdefault(ck, app)
+                if corto := re.sub(r"(launcher|desktop|client|browser|player)+$", "", ck):
+                    apps.setdefault(corto, app)
+        partes = [clave(p) for p in id.split(".") if clave(p) and clave(p) not in ID_PARTES_GENERICAS]
+        if partes:
+            apps.setdefault(partes[-1], app)
     for tool in APPS_TERMINAL:
         if shutil.which(tool):
             por_id[tool] = apps[tool] = App(tool, tool, cmd_terminal(tool))
@@ -379,74 +662,934 @@ def resolver_app(nombre):
     return APPS[cerca[0]] if cerca else None
 
 
-# --- Interpretación ----------------------------------------------------------------
-ACCIONES = ["abrir_app", "abrir_proyecto", "docker_estado", "docker_levantar", "docker_detener",
-            "volumen", "multimedia", "estado_sistema", "perfil_energia", "buscar_web",
-            "bloquear_pantalla", "actualizar_sistema", "pregunta", "no_entendido"]
+# --- Acciones (lista blanca) --------------------------------------------------------
+ATAJOS_KWIN = {
+    "maximizar": "Window Maximize",
+    "minimizar": "Window Minimize",
+    "pantalla_completa": "Window Fullscreen",
+    "izquierda": "Window Quick Tile Left",
+    "derecha": "Window Quick Tile Right",
+    "otra_pantalla": "Window to Next Screen",
+    "mostrar_escritorio": "Show Desktop",
+    "siguiente_escritorio": "Switch to Next Desktop",
+    "escritorio_anterior": "Switch to Previous Desktop",
+    **{f"escritorio_{i}": f"Switch to Desktop {i}" for i in range(1, 10)},
+    **{f"mover_escritorio_{i}": f"Window to Desktop {i}" for i in range(1, 10)},
+}
 
-PROMPT_COMANDOS = """Eres el intérprete de comandos de voz de un PC de desarrollo. La frase puede estar en español o en inglés.
-Convierte la frase en UNA acción. Los valores fijos de parametro van SIEMPRE en español, tal como aparecen aquí.
-Acciones y su parámetro:
-- abrir_app: abrir una aplicación (open/launch). parametro = nombre de la app tal como lo dijo (ej: firefox, vscode, kitty, compass, htop, terminal, calculadora)
-- abrir_proyecto: abrir un proyecto/repositorio en VS Code. parametro = nombre del proyecto tal como lo dijo
-- docker_estado: qué contenedores están corriendo (which containers are running). parametro = ""
-- docker_levantar: levantar/iniciar los contenedores (start containers). parametro = ""
-- docker_detener: detener/parar los contenedores (stop containers). parametro = ""
-- volumen: parametro = subir | bajar | silenciar | activar | un número 0-100
-- multimedia: parametro = pausa | reproducir | siguiente | anterior
-- estado_sistema: temperatura, memoria, disco, cómo está el PC (system status). parametro = ""
-- perfil_energia: parametro = rendimiento | equilibrado | ahorro
-- buscar_web: buscar en internet (search the web). parametro = lo que hay que buscar, en el idioma original
-- bloquear_pantalla: parametro = ""
-- actualizar_sistema: actualizar el sistema, los paquetes o todo (update/upgrade the system). parametro = ""
-- pregunta: una pregunta clara de conocimiento general o de programación. parametro = la pregunta completa
-- no_entendido: muletillas, frases incompletas o sin sentido. parametro = ""
-Responde solo el JSON."""
 
+def lanzar(cmd):
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def kwin_atajo(nombre):
+    subprocess.run(["busctl", "--user", "call", "org.kde.kglobalaccel", "/component/kwin",
+                    "org.kde.kglobalaccel.Component", "invokeShortcut", "s", nombre], capture_output=True)
+
+
+def cerrar_ventana(app=None):
+    """Cierra la ventana activa (si app es None) o las ventanas de la app dada mediante KWin."""
+    if app is None:
+        kwin_atajo("Window Close")
+        return
+    if app.id in APPS_TERMINAL:
+        # Solo las ventanas de terminal cuyo título es la herramienta: un pkill cerraría también
+        # las instancias abiertas en otras terminales o sesiones
+        cond = f'w.caption.toLowerCase().split(/\\s+/)[0] === {json.dumps(app.id.lower())}'
+    else:
+        claves = list({app.id.lower(), app.nombre.lower(),
+                       *(p.lower() for p in app.id.split(".") if p.lower() not in ID_PARTES_GENERICAS and len(p) > 2)})
+        obj = json.dumps(claves)
+        cond = f'({obj}.includes(w.desktopFileName.toLowerCase()) || {obj}.includes(w.resourceClass.toLowerCase()))'
+    js = RUNTIME / "asistente-voz-kwin.js"
+    js.write_text(f"for (const w of workspace.windowList()) {{ if (w.normalWindow && {cond}) w.closeWindow(); }}\n")
+    subprocess.run(["busctl", "--user", "call", "org.kde.KWin", "/Scripting",
+                    "org.kde.kwin.Scripting", "unloadScript", "s", "asistente_cerrar"], capture_output=True)
+    r = subprocess.run(["busctl", "--user", "call", "org.kde.KWin", "/Scripting",
+                        "org.kde.kwin.Scripting", "loadScript", "ss", str(js), "asistente_cerrar"],
+                       capture_output=True, text=True)
+    if sid := (r.stdout.split()[-1] if r.stdout.split() else ""):
+        subprocess.run(["busctl", "--user", "call", "org.kde.KWin", f"/Scripting/Script{sid}",
+                        "org.kde.kwin.Script", "run"], capture_output=True)
+        subprocess.run(["busctl", "--user", "call", "org.kde.KWin", "/Scripting",
+                        "org.kde.kwin.Scripting", "unloadScript", "s", "asistente_cerrar"], capture_output=True)
+
+
+def palabras(nombre):
+    nombre = re.sub(r"([a-z])([A-Z])", r"\1 \2", nombre)
+    return set(normalizar(nombre).replace(".", " ").replace("_", " ").replace("-", " ").split())
+
+
+def resolver_tarea(pedido):
+    if not TAREAS or not pedido:
+        return None
+    objetivo = palabras(pedido) - {"tarea", "la", "el", "de", "del", "en", "task", "the", "run", "ejecuta", "corre"}
+    if not objetivo:
+        return None
+    mejor, puntaje = None, 0.0
+    for nombre in TAREAS:
+        pal = palabras(nombre)
+        p = sum(max((difflib.SequenceMatcher(None, o, w).ratio() for w in pal), default=0)
+                for o in objetivo) / len(objetivo)
+        if p > puntaje:
+            mejor, puntaje = nombre, p
+    return mejor if puntaje >= 0.75 else None
+
+
+def proyectos():
+    lista = [d for d in PROYECTOS.iterdir() if (d / ".git").is_dir() and not d.name.startswith("_")] if PROYECTOS.is_dir() else []
+    if (BASE / ".git").is_dir() and BASE not in lista:
+        lista.append(BASE)
+    return lista
+
+
+def buscar_proyecto(pedido):
+    disp = proyectos()
+    if not disp:
+        return None
+    objetivo = palabras(pedido) - {"proyecto", "el", "la", "de", "del", "repo", "repositorio", "project", "the", "en", "in"}
+    if not objetivo:
+        # Si no se especificó nombre, usar el repositorio modificado más recientemente
+        return max(disp, key=lambda d: (d / ".git").stat().st_mtime)
+    mejor, puntaje = None, 0.0
+    for d in disp:
+        nombre = palabras(d.name)
+        p = sum(max((difflib.SequenceMatcher(None, o, w).ratio() for w in nombre), default=0)
+                for o in objetivo) / max(len(objetivo), 1)
+        if p > puntaje:
+            mejor, puntaje = d, p
+    return mejor if puntaje >= 0.75 else None
+
+
+def klipper_leer():
+    r = subprocess.run(["busctl", "--user", "--json=short", "call", "org.kde.klipper", "/klipper",
+                        "org.kde.klipper.klipper", "getClipboardContents"],
+                       capture_output=True, text=True, timeout=3)
+    if r.returncode != 0 or not r.stdout.strip():
+        return ""
+    try:
+        return (json.loads(r.stdout).get("data") or [""])[0].strip()
+    except Exception:
+        return ""
+
+
+def parece_secreto(texto):
+    """Una sola «palabra» larga que mezcla letras, números y símbolos: contraseña o token."""
+    t = texto.strip()
+    if not 8 <= len(t) <= 200 or re.search(r"\s", t) or re.match(r"(https?|file)://", t):
+        return False
+    clases = sum(bool(re.search(p, t)) for p in (r"[a-z]", r"[A-Z]", r"\d", r"[^\w]"))
+    return clases >= 3 or bool(re.fullmatch(r"(sk|ghp|gho|xox[bp]|AKIA)[\w-]{10,}", t))
+
+
+def klipper_escribir(texto):
+    subprocess.run(["busctl", "--user", "call", "org.kde.klipper", "/klipper",
+                    "org.kde.klipper.klipper", "setClipboardContents", "s", texto],
+                   capture_output=True, timeout=3)
+
+
+def controlar_luz_nocturna(modo, m):
+    r = subprocess.run(["busctl", "--user", "--json=short", "get-property", "org.kde.KWin.NightLight",
+                        "/org/kde/KWin/NightLight", "org.kde.KWin.NightLight", "inhibited"],
+                       capture_output=True, text=True, timeout=3)
+    try:
+        inhibida = bool(json.loads(r.stdout)["data"][0])
+    except Exception:
+        inhibida = None
+    if modo == "luz_nocturna_on":
+        if inhibida is True or inhibida is None:
+            kwin_atajo("Toggle Night Color")
+        return m["luz_nocturna_on"]
+    if modo == "luz_nocturna_off":
+        if inhibida is False or inhibida is None:
+            kwin_atajo("Toggle Night Color")
+        return m["luz_nocturna_off"]
+    kwin_atajo("Toggle Night Color")
+    if inhibida is not None:
+        return m["luz_nocturna_on" if inhibida else "luz_nocturna_off"]
+    return m["luz_nocturna_toggle"]
+
+
+def ajustar_brillo(param, m):
+    p = normalizar(param)
+    if p.startswith("luz_nocturna"):
+        return controlar_luz_nocturna(p, m)
+    svc = ["busctl", "--user", "--json=short", "call", "org.kde.Solid.PowerManagement",
+           "/org/kde/Solid/PowerManagement/Actions/BrightnessControl",
+           "org.kde.Solid.PowerManagement.Actions.BrightnessControl"]
+    rmax = subprocess.run(svc + ["brightnessMax"], capture_output=True, text=True, timeout=3)
+    rcur = subprocess.run(svc + ["brightness"], capture_output=True, text=True, timeout=3)
+    try:
+        bmax = int(json.loads(rmax.stdout)["data"][0])
+        bcur = int(json.loads(rcur.stdout)["data"][0])
+    except Exception:
+        bmax = 0
+    if bmax <= 0:
+        return m["brillo_no"]
+    if p.isdigit():
+        pct = max(0, min(100, int(p)))
+    else:
+        pct_actual = round(bcur * 100 / bmax)
+        pct = max(5, min(100, pct_actual + (15 if p == "subir" else -15)))
+    nuevo = round(bmax * pct / 100)
+    subprocess.run(svc + ["setBrightness", "i", str(nuevo)], capture_output=True, timeout=3)
+    return m["brillo_n"].format(x=pct)
+
+
+def _formatear_duracion(seg, lang):
+    if seg >= 3600:
+        h, r = divmod(seg, 3600)
+        m = r // 60
+        if lang == "en":
+            return f"{h} hour{'s' if h != 1 else ''}" + (f" {m} min" if m else "")
+        return f"{h} hora{'s' if h != 1 else ''}" + (f" y {m} min" if m else "")
+    if seg >= 60:
+        m, s = divmod(seg, 60)
+        if lang == "en":
+            return f"{m} minute{'s' if m != 1 else ''}" + (f" {s} s" if s else "")
+        return f"{m} minuto{'s' if m != 1 else ''}" + (f" y {s} s" if s else "")
+    return f"{seg} second{'s' if seg != 1 else ''}" if lang == "en" else f"{seg} segundo{'s' if seg != 1 else ''}"
+
+
+def programar_temporizador(param, lang, m):
+    partes = param.split(":", 1)
+    if not partes[0].isdigit():
+        # El LLM a veces devuelve «5 minutos» en vez de segundos
+        convertido = extraer_temporizador("temporizador de " + normalizar(param), param)
+        if not convertido:
+            return m["timer_no"]
+        partes = convertido.split(":", 1)
+    seg = int(partes[0])
+    if seg <= 0:
+        return m["timer_no"]
+    nota = partes[1].strip() if len(partes) > 1 and partes[1].strip() else _formatear_duracion(seg, lang)
+
+    def avisar():
+        msg = m["timer_fin"].format(x=nota)
+        sonido("completion-success", esperar=True)
+        notificar("⏰", msg, "dialog-information", segundos=15)
+        if _voz_activa and not _voz_activa.hablando:
+            _voz_activa.decir(msg, lang)
+
+    hilo = threading.Timer(seg, avisar)
+    hilo.daemon = True
+    hilo.start()
+    return m["timer_ok"].format(t=_formatear_duracion(seg, lang))
+
+
+def kdeconnect_dispositivo():
+    """Devuelve (id, nombre) del primer dispositivo KDE Connect emparejado y alcanzable."""
+    r = subprocess.run(["busctl", "--user", "tree", "--list", "org.kde.kdeconnect"],
+                       capture_output=True, text=True, timeout=3)
+    for linea in r.stdout.splitlines():
+        m_dev = re.fullmatch(r"/modules/kdeconnect/devices/([a-zA-Z0-9_]+)", linea.strip())
+        if not m_dev:
+            continue
+        dev_id = m_dev.group(1)
+        ruta = f"/modules/kdeconnect/devices/{dev_id}"
+        rp = subprocess.run(["busctl", "--user", "--json=short", "get-property", "org.kde.kdeconnect",
+                             ruta, "org.kde.kdeconnect.device", "isPaired", "isReachable", "name"],
+                            capture_output=True, text=True, timeout=3)
+        try:
+            datos = [json.loads(l)["data"][0] for l in rp.stdout.splitlines() if l.strip()]
+            if len(datos) == 3 and datos[0] and datos[1]:
+                return dev_id, str(datos[2])
+        except Exception:
+            continue
+    return None, None
+
+
+def kdeconnect_accion(modo, m):
+    dev_id, nombre = kdeconnect_dispositivo()
+    if not dev_id:
+        return m["tel_no"]
+    if modo == "sonar":
+        subprocess.run(["kdeconnect-cli", "-d", dev_id, "--ring"], capture_output=True, timeout=5)
+        return m["tel_sonar"].format(x=nombre)
+    if modo == "bateria":
+        ruta = f"/modules/kdeconnect/devices/{dev_id}/battery"
+        rb = subprocess.run(["busctl", "--user", "--json=short", "get-property", "org.kde.kdeconnect",
+                             ruta, "org.kde.kdeconnect.device.battery", "charge", "isCharging"],
+                            capture_output=True, text=True, timeout=3)
+        try:
+            carga, cargando = [json.loads(l)["data"][0] for l in rb.stdout.splitlines() if l.strip()]
+            return m["tel_bat"].format(x=nombre, b=carga, c=m["tel_cargando"] if cargando else "")
+        except Exception:
+            return m["fallo"]
+    if modo == "portapapeles":
+        texto = klipper_leer()
+        if not texto:
+            return m["clip_vacio"]
+        subprocess.run(["kdeconnect-cli", "-d", dev_id, "--share-text", texto], capture_output=True, timeout=5)
+        return m["tel_clip"].format(x=nombre)
+    return m["no_entendi"]
+
+
+def git_info_proyecto(param, m):
+    modo, sep, proy = param.partition(":")
+    if not sep and modo not in ("estado", "commit"):
+        modo, proy = "estado", modo
+    if normalizar(proy) in ("main", "master", "head", "git"):
+        proy = ""
+    d = buscar_proyecto(proy)
+    if not d:
+        return m["proyecto_no"].format(x=proy or "actual")
+    if modo == "commit":
+        r = subprocess.run(["git", "-C", str(d), "log", "-1", "--pretty=format:%s (%cr)"],
+                           capture_output=True, text=True, timeout=5)
+        return m["git_commit"].format(x=d.name, c=r.stdout.strip() or "—")
+    rama = subprocess.run(["git", "-C", str(d), "branch", "--show-current"],
+                          capture_output=True, text=True, timeout=5).stdout.strip() or "HEAD"
+    estado = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+                            capture_output=True, text=True, timeout=5).stdout.splitlines()
+    cambios = m["git_cambios"].format(n=len(estado)) if estado else m["git_limpio"]
+    # Según el último fetch (no se conecta a la red)
+    r = subprocess.run(["git", "-C", str(d), "rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+                       capture_output=True, text=True, timeout=5)
+    sync = ""
+    if r.returncode == 0 and len(cuenta := r.stdout.split()) == 2:
+        subir, bajar = int(cuenta[0]), int(cuenta[1])
+        sync = (m["git_subir"].format(n=subir) if subir else "") + (m["git_bajar"].format(n=bajar) if bajar else "")
+    return m["git_estado"].format(x=d.name, r=rama, cambios=cambios, sync=sync)
+
+
+def resolver_contenedor(pedido, aproximado=False):
+    """Nombre exacto del contenedor (sin el sufijo -local). Con aproximado=True también acepta nombres
+    parecidos, pero nunca una subcadena: «la rapidez» contiene «api» y no debe reiniciar el contenedor api."""
+    p = clave(re.sub(r"^((el|la|the)\s+)?(contenedor|container)\s+(de\s+|del\s+)?", "", normalizar(pedido or "")))
+    if not p:
+        return None
+    r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=5)
+    nombres = r.stdout.split()
+    base = {n: clave(n.removesuffix("-local")) for n in nombres}
+    for n, b in base.items():
+        if p in (b, clave(n)):
+            return n
+    if not aproximado or not nombres:
+        return None
+    mejor = max(nombres, key=lambda n: difflib.SequenceMatcher(None, p, base[n]).ratio())
+    return mejor if difflib.SequenceMatcher(None, p, base[mejor]).ratio() >= 0.8 else None
+
+
+def pista_whisper():
+    """Vocabulario de contexto para Whisper. Lista de términos, no frases: con frases de ejemplo
+    Whisper tiende a cortar las transcripciones."""
+    nombres = [d.name for d in proyectos()]
+    # "Empresa.Modulo.Sub" -> "Modulo Sub" cuando el prefijo se repite en varios repos
+    prefijos = [n.split(".")[0] for n in nombres if "." in n]
+    nombres = [n.split(".", 1)[1] if "." in n and prefijos.count(n.split(".")[0]) >= 3 else n for n in nombres]
+    nombres = [n.replace(".", " ") for n in nombres]
+    return ("VS Code, Visual Studio Code, Firefox, kitty, htop, btop, nvtop, KWrite, lazygit, lazydocker, "
+            "MongoDB Compass, Docker, " + ", ".join(n for n in nombres if n))
+
+
+NAVEGADORES_MPRIS = ("edge", "firefox", "chromium", "chrome", "brave", "plasma-browser-integration")
+
+
+def mpris(metodo, solo_activo=False):
+    r = subprocess.run(["busctl", "--user", "list", "--no-legend"], capture_output=True, text=True)
+    reproductores = [l.split()[0] for l in r.stdout.splitlines() if l.startswith("org.mpris.MediaPlayer2.")]
+    if not reproductores:
+        return False
+    # Priorizar reproductores dedicados (Spotify, Elisa, VLC…) antes que navegadores web
+    reproductores.sort(key=lambda n: any(b in n.lower() for b in NAVEGADORES_MPRIS))
+    for nombre in reproductores:
+        subprocess.run(["busctl", "--user", "call", nombre, "/org/mpris/MediaPlayer2",
+                        "org.mpris.MediaPlayer2.Player", metodo], capture_output=True)
+        if solo_activo:
+            break
+    return True
+
+
+def temperatura_cpu():
+    for hw in Path("/sys/class/hwmon").iterdir():
+        try:
+            if (hw / "name").read_text().strip() in ("coretemp", "k10temp", "zenpower"):   # Intel / AMD
+                return int((hw / "temp1_input").read_text()) // 1000
+        except OSError:
+            continue
+    return None
+
+
+def info_gpu_nvidia():
+    if not shutil.which("nvidia-smi"):
+        return None
+    r = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu,utilization.gpu,memory.used",
+                        "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5)
+    partes = [p.strip() for p in r.stdout.split(",")]
+    if r.returncode == 0 and len(partes) == 3 and all(p.isdigit() for p in partes):
+        return int(partes[0]), int(partes[1]), int(partes[2]) / 1024.0
+    return None
+
+
+def bateria_sistema():
+    for bat in Path("/sys/class/power_supply").glob("BAT*"):
+        try:
+            return int((bat / "capacity").read_text().strip())
+        except OSError:
+            continue
+    return None
+
+
+def red_activa():
+    if not shutil.which("nmcli"):
+        return None
+    r = subprocess.run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
+                       capture_output=True, text=True, timeout=3)
+    for linea in r.stdout.splitlines():
+        nombre, _, tipo = linea.partition(":")
+        if nombre and tipo not in ("loopback", "bridge") and not nombre.startswith(("docker", "br-", "veth")):
+            return nombre
+    return None
+
+
+def perfil_energia_actual():
+    """Perfil de power-profiles-daemon. /sys/firmware/acpi/platform_profile no existe en todos los equipos."""
+    r = subprocess.run(["busctl", "--system", "get-property", "org.freedesktop.UPower.PowerProfiles",
+                        "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles",
+                        "ActiveProfile"], capture_output=True, text=True)
+    m = re.search(r'"(.+)"', r.stdout)
+    if m:
+        return m.group(1)
+    f = Path("/sys/firmware/acpi/platform_profile")
+    return f.read_text().strip() if f.exists() else "?"
+
+
+def estado_sistema(m):
+    info = dict(l.split(":", 1) for l in Path("/proc/meminfo").read_text().splitlines())
+    total = int(info["MemTotal"].split()[0]) / 1048576
+    libre = int(info["MemAvailable"].split()[0]) / 1048576
+    perfil = perfil_energia_actual()
+    gpu = info_gpu_nvidia()
+    bat = bateria_sistema()
+    red = red_activa()
+    return m["estado"].format(
+        t=temperatura_cpu() or "?",
+        gpu=m["gpu"].format(t=gpu[0], uso=gpu[1], vram=gpu[2]) if gpu else "",
+        u=total - libre, m=total, d=shutil.disk_usage("/").free / 1e9,
+        bat=m["bat"].format(b=bat) if bat is not None else "",
+        red=m["red"].format(r=red) if red else "",
+        p=m["perfiles"].get(perfil, perfil),
+    )
+
+
+def diagnostico_sistema(param, m):
+    if param in ("cpu", "memoria"):
+        llave = "-%cpu" if param == "cpu" else "-%mem"
+        r = subprocess.run(["ps", "-eo", "comm,%cpu,%mem", f"--sort={llave}", "--no-headers"],
+                           capture_output=True, text=True, timeout=4)
+        vistos = []
+        for l in r.stdout.splitlines():
+            partes = l.split()
+            if len(partes) >= 3 and partes[0] not in ("ps", "asistente.py") and partes[0] not in vistos:
+                val = partes[1] if param == "cpu" else partes[2]
+                vistos.append(f"{partes[0]} ({val}%)")
+            if len(vistos) == 3:
+                break
+        return m["top_proc"].format(x=", ".join(vistos) or "—")
+
+    if param.startswith("puerto:"):
+        puerto = param.split(":", 1)[1].strip()
+        r = subprocess.run(["ss", "-tulpn", f"sport = :{puerto}"], capture_output=True, text=True, timeout=4)
+        lineas = r.stdout.splitlines()[1:]
+        if not lineas:
+            return m["puerto_libre"].format(p=puerto)
+        procs = sorted(set(re.findall(r'"([^"]+)"', r.stdout)))
+        return m["puerto_uso"].format(p=puerto, x=", ".join(procs) if procs else "un proceso activo")
+
+    if param == "puertos":
+        r = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=4)
+        hallados = []
+        for l in r.stdout.splitlines()[1:]:
+            m_port = re.search(r":(\d+)\s", l)
+            m_proc = re.search(r'"([^"]+)"', l)
+            if m_port:
+                p = int(m_port.group(1))
+                etiqueta = f"{p} ({m_proc.group(1)})" if m_proc else str(p)
+                if etiqueta not in hallados:
+                    hallados.append(etiqueta)
+        return m["puertos_lista"].format(x=", ".join(hallados[:6])) if hallados else m["puertos_ninguno"]
+
+    if param == "actualizaciones":
+        n = 0
+        # Arch: checkupdates usa una copia de la base de datos (pacman -Qu solo ve el último -Sy)
+        for cmd in (["checkupdates"], ["pacman", "-Qu"]):
+            if shutil.which(cmd[0]):
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                n += len([l for l in r.stdout.splitlines() if l.strip()])
+                break
+        for aur in ("yay", "paru"):
+            if shutil.which(aur):
+                r = subprocess.run([aur, "-Qua"], capture_output=True, text=True, timeout=30)
+                n += len([l for l in r.stdout.splitlines() if l.strip()])
+                break
+        if shutil.which("dnf"):   # Fedora: devuelve 100 si hay actualizaciones; una línea "paquete.arq versión repo"
+            r = subprocess.run(["dnf", "-q", "check-update"], capture_output=True, text=True, timeout=60)
+            n += len([l for l in r.stdout.splitlines() if re.match(r"^\S+\.\S+\s+\S+\s+\S+\s*$", l)])
+        if shutil.which("flatpak"):
+            r = subprocess.run(["flatpak", "remote-ls", "--updates"], capture_output=True, text=True, timeout=15)
+            n += len([l for l in r.stdout.splitlines() if l.strip()])
+        return m["updates_n"].format(n=n) if n > 0 else m["updates_0"]
+
+    return m["no_entendi"]
+
+
+def comando_actualizar():
+    if COMANDO_ACTUALIZAR:
+        return COMANDO_ACTUALIZAR
+    pasos = []
+    # yay y paru piden sudo por su cuenta; no deben ejecutarse como root
+    for cmd in ("yay -Syu", "paru -Syu", "sudo pacman -Syu", "sudo dnf upgrade --refresh"):
+        if shutil.which(cmd.removeprefix("sudo ").split()[0]):
+            pasos.append(cmd)
+            break
+    if shutil.which("flatpak"):
+        pasos.append("flatpak update")
+    return "; ".join(pasos) or None
+
+
+# --- Ejecutores individuales por acción --------------------------------------------
+def _ej_abrir_app(param, _lang, m):
+    app = resolver_app(param)
+    if not app:
+        return m["app_no"].format(x=param)
+    lanzar(app.cmd)
+    return m["abriendo"].format(x=app.nombre)
+
+
+def _ej_cerrar_app(param, _lang, m):
+    if not param:
+        cerrar_ventana(None)
+        return ""
+    app = resolver_app(param)
+    if not app:
+        return m["app_no"].format(x=param)
+    cerrar_ventana(app)
+    return m["cerrando"].format(x=app.nombre)
+
+
+def _ej_abrir_proyecto(param, _lang, m):
+    d = buscar_proyecto(param)
+    if not d:
+        return m["proyecto_no"].format(x=param)
+    lanzar(["code", str(d)])
+    return m["proyecto"].format(x=d.name)
+
+
+def _ej_terminal_proyecto(param, _lang, m):
+    modo, _, proy = param.partition(":")
+    d = buscar_proyecto(proy)
+    if not d:
+        return m["proyecto_no"].format(x=proy or "actual")
+    if modo == "lazygit" and shutil.which("lazygit"):
+        lanzar(cmd_terminal("bash", "-c", f"cd {shlex.quote(str(d))} && exec lazygit"))
+        return m["proyecto_term"].format(t="lazygit", x=d.name)
+    lanzar(cmd_terminal("bash", "-c", f"cd {shlex.quote(str(d))} && exec ${{SHELL:-bash}}"))
+    return m["proyecto_term"].format(t=TERMINAL, x=d.name)
+
+
+def _ej_ejecutar_tarea(param, _lang, m):
+    nombre = resolver_tarea(param)
+    if not nombre:
+        return m["tarea_no"].format(x=param)
+    cmd = TAREAS[nombre]
+    lanzar(cmd_terminal("bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'))
+    return m["tarea"].format(x=nombre)
+
+
+def _ej_ventana(param, _lang, m):
+    atajo = ATAJOS_KWIN.get(normalizar(param))
+    if not atajo:
+        return m["no_entendi"]
+    kwin_atajo(atajo)
+    return ""
+
+
+def _ej_portapapeles(param, _lang, m):
+    contenido = klipper_leer()
+    if not contenido:
+        return m["clip_vacio"]
+    recorte = contenido[:1500]
+    if param == "leer":
+        return m["clip_secreto"] if parece_secreto(contenido) else recorte[:400]
+    clave_prompt = {"resumir": "clip_prompt_resumir", "traducir": "clip_prompt_traducir",
+                    "explicar": "clip_prompt_explicar"}.get(param, "clip_prompt_explicar")
+    notificar(m["pensando"], recorte[:120], "dialog-question")
+    return ollama(MODELO_PREGUNTAS, m["responde"], m[clave_prompt].format(x=recorte)).strip()
+
+
+def _ej_dictar(param, _lang, m):
+    if not param:
+        return m["no_entendi"]
+    klipper_escribir(param)
+    return m["dictado_ok"].format(x=param)
+
+
+def _ej_docker_estado(_param, _lang, m):
+    r = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True)
+    nombres = [n.replace("-local", "").replace("-", " ") for n in r.stdout.split()]
+    if not nombres:
+        return m["docker_0"]
+    return m["docker_n"].format(n=len(nombres), x=", ".join(nombres))
+
+
+def _ej_docker_compose(up, m):
+    if not COMPOSE:
+        return m["docker_sin_compose"]
+    notificar("Docker", m["docker_up" if up else "docker_stop"])
+    r = subprocess.run(["docker", "compose", "-f", str(COMPOSE)] + (["up", "-d"] if up else ["stop"]),
+                       capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        log(r.stderr)
+        return m["docker_error"]
+    return m["docker_up_ok" if up else "docker_stop_ok"]
+
+
+def _ej_docker_logs(param, _lang, m):
+    cont = resolver_contenedor(param, aproximado=True)   # ver logs no cambia nada
+    if not cont:
+        return m["docker_cont_no"].format(x=param)
+    lanzar(cmd_terminal("docker", "logs", "-f", "--tail", "100", cont))
+    return m["docker_logs"].format(x=cont)
+
+
+def _ej_docker_reiniciar(param, _lang, m):
+    cont = resolver_contenedor(param)
+    if not cont:
+        return m["docker_cont_no"].format(x=param)
+    r = subprocess.run(["docker", "restart", cont], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        log(r.stderr)
+        return m["docker_error"]
+    return m["docker_restart"].format(x=cont)
+
+
+def _ej_volumen(param, _lang, m):
+    sink = "@DEFAULT_AUDIO_SINK@"
+    p = normalizar(param)
+    if p.isdigit():
+        subprocess.run(["wpctl", "set-volume", "-l", "1.0", sink, f"{min(int(p), 100)}%"])
+        return m["vol_n"].format(x=min(int(p), 100))
+    if p == "silenciar":
+        subprocess.run(["wpctl", "set-mute", sink, "1"])
+        return ""
+    if p == "activar":
+        subprocess.run(["wpctl", "set-mute", sink, "0"])
+        return m["vol_on"]
+    subprocess.run(["wpctl", "set-mute", sink, "0"])
+    subprocess.run(["wpctl", "set-volume", "-l", "1.0", sink, "10%+" if p == "subir" else "10%-"])
+    return ""
+
+
+def _ej_multimedia(param, _lang, m):
+    metodo = {"pausa": "Pause", "reproducir": "Play", "siguiente": "Next", "anterior": "Previous"}.get(param)
+    if not metodo:
+        return m["media_no"]
+    if not mpris(metodo, solo_activo=metodo in ("Play", "Next", "Previous")):
+        if metodo == "Play" and (sp := resolver_app("spotify")):
+            lanzar(sp.cmd)
+            return m["abriendo"].format(x=sp.nombre)
+        return m["media_0"]
+    return ""
+
+
+def _ej_perfil_energia(param, _lang, m):
+    perfil = {"rendimiento": "performance", "equilibrado": "balanced", "ahorro": "power-saver"}.get(param)
+    if not perfil:
+        return m["perfil_no"]
+    subprocess.run(["busctl", "--system", "set-property", "org.freedesktop.UPower.PowerProfiles",
+                    "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles",
+                    "ActiveProfile", "s", perfil])
+    return m["perfil"].format(x=m["perfiles"][perfil])
+
+
+def _ej_buscar_web(param, _lang, m):
+    lanzar(["firefox", "--search", param])
+    return m["buscando"].format(x=param)
+
+
+def _ej_bloquear_pantalla(_param, _lang, _m):
+    subprocess.run(["loginctl", "lock-sessions"])
+    return ""
+
+
+def _ej_actualizar_sistema(_param, _lang, m):
+    # En una terminal: sudo necesita tu contraseña y así ves el progreso. El asistente nunca la maneja.
+    cmd = comando_actualizar()
+    if not cmd:
+        return m["actualizar_no"]
+    lanzar(cmd_terminal("bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'))
+    return m["actualizando"]
+
+
+def _ej_pregunta(param, _lang, m):
+    notificar(m["pensando"], param, "dialog-question")
+    return ollama(MODELO_PREGUNTAS, m["responde"], param).strip()
+
+
+# --- Tabla declarativa de acciones e interpretación --------------------------------
+class DefinicionAccion(NamedTuple):
+    nombre: str
+    prompt: str
+    evidencia: str | None = None
+    reglas: tuple[tuple[str, str | None], ...] = ()
+    ejecutor: object = None
+
+
+REGISTRO_ACCIONES = [
+    DefinicionAccion(
+        nombre="abrir_app",
+        prompt="abrir una aplicación (open/launch). parametro = nombre de la app tal como lo dijo (ej: firefox, vscode, kitty, compass, htop, terminal, calculadora)",
+        evidencia=r"\b(abr|lanz|inici|ejecut|muestr|mostr|open|launch|start|run|show)\w*",
+        ejecutor=_ej_abrir_app,
+    ),
+    DefinicionAccion(
+        nombre="cerrar_app",
+        prompt='cerrar una aplicación o la ventana actual (close/quit). parametro = nombre de la app tal como lo dijo, o "" si dice "la ventana" / "the window"',
+        evidencia=r"\b(cierr|cerr|close|quit)\w*",
+        ejecutor=_ej_cerrar_app,
+    ),
+    DefinicionAccion(
+        nombre="abrir_proyecto",
+        prompt="abrir un proyecto/repositorio en VS Code. parametro = nombre del proyecto tal como lo dijo",
+        evidencia=r"\b(abr|proyecto|repo|open|project)\w*",
+        ejecutor=_ej_abrir_proyecto,
+    ),
+    DefinicionAccion(
+        nombre="terminal_proyecto",
+        prompt="abrir la terminal o lazygit en un proyecto. parametro = terminal:<proyecto> | lazygit:<proyecto>",
+        evidencia=r"\b(terminal|consola|lazygit)\b.*\b(proyecto|project|en|in)\b",
+        ejecutor=_ej_terminal_proyecto,
+    ),
+    DefinicionAccion(
+        nombre="git_proyecto",
+        prompt="estado de git o último commit de un proyecto. parametro = estado:<proyecto> | commit:<proyecto>",
+        evidencia=r"\b(estado|status|commit|comi|git|rama|branch)\b",
+        ejecutor=lambda p, _l, m: git_info_proyecto(p, m),
+    ),
+    DefinicionAccion(
+        nombre="ejecutar_tarea",
+        prompt="ejecutar una tarea configurada (run task). parametro = nombre de la tarea tal como lo dijo",
+        evidencia=r"\b(ejecut|corr|lanz|inici|tarea|run|start|task)\w*",
+        ejecutor=_ej_ejecutar_tarea,
+    ),
+    DefinicionAccion(
+        nombre="ventana",
+        prompt="gestionar la ventana actual o cambiar de escritorio. parametro = maximizar | minimizar | pantalla_completa | izquierda | derecha | otra_pantalla | mostrar_escritorio | siguiente_escritorio | escritorio_anterior | escritorio_1..9 | mover_escritorio_1..9",
+        evidencia=(r"maximiz|minimiz|pantalla completa|full\s*screen|ventana|window|escritorio|desktop|otra pantalla"
+                   r"|otro monitor|next screen|other screen|izquierda|left|derecha|right"),
+        reglas=(
+            (r"\b(maximiza\w*|maximize)\b", "maximizar"),
+            (r"\b(minimiza\w*|minimize)\b", "minimizar"),
+            (r"\b(pantalla completa|full\s*screen)\b", "pantalla_completa"),
+            (r"\b(muestra|mostrar)\w* (el )?escritorio|\bshow (the )?desktop\b", "mostrar_escritorio"),
+            (r"\b(manda|mueve|pasa|envia|send|move)\w* .*?\b(otra pantalla|otro monitor|next screen|other screen|other monitor)\b", "otra_pantalla"),
+            (r"\b(ventana|window|pon\w*|manda\w*|mueve\w*|move\w*|send\w*|tile)\b .*?\b(a la izquierda|to the left|left)\b", "izquierda"),
+            (r"\b(ventana|window|pon\w*|manda\w*|mueve\w*|move\w*|send\w*|tile)\b .*?\b(a la derecha|to the right|right)\b", "derecha"),
+            (r"\b(siguiente escritorio|escritorio siguiente|next desktop)\b", "siguiente_escritorio"),
+            (r"\b(escritorio anterior|previous desktop)\b", "escritorio_anterior"),
+        ),
+        ejecutor=_ej_ventana,
+    ),
+    DefinicionAccion(
+        nombre="portapapeles",
+        prompt="usar el texto copiado en el portapapeles (clipboard). parametro = leer | resumir | traducir | explicar",
+        evidencia=r"portapapeles|clipboard|copi\w*|copied",
+        reglas=(
+            (r"\b(lee\w*|leame|leer|dime|read)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "leer"),
+            (r"\b(resum\w*|summarize)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "resumir"),
+            (r"\b(traduc\w*|translate)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "traducir"),
+            (r"\b(explic\w*|explain)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "explicar"),
+        ),
+        ejecutor=_ej_portapapeles,
+    ),
+    DefinicionAccion(
+        nombre="temporizador",
+        prompt="poner un temporizador o recordatorio (timer/reminder). parametro = segundos (ej: 600)",
+        evidencia=r"temporizador|timer|avisame|recuerdame|remind|alarm",
+        ejecutor=programar_temporizador,
+    ),
+    DefinicionAccion(
+        nombre="brillo",
+        prompt="ajustar el brillo de pantalla o la luz nocturna (brightness/night light). parametro = subir | bajar | 0..100 | luz_nocturna | luz_nocturna_on | luz_nocturna_off",
+        evidencia=r"brillo|brightness|luz nocturna|modo nocturno|night light|night color",
+        reglas=(
+            (r"\b(sube|subir|aumenta)\w* (el )?brillo|\b(increase|turn up|raise) (the )?brightness|\bbrightness up\b", "subir"),
+            (r"\b(baja|bajar|disminu)\w* (el )?brillo|\b(decrease|turn down|lower) (the )?brightness|\bbrightness down\b", "bajar"),
+            (r"\b(activa|enciende|pon|enable|turn on)\w* .*?\b(luz nocturna|modo nocturno|night light|night color)\b", "luz_nocturna_on"),
+            (r"\b(desactiva|apaga|quita|disable|turn off)\w* .*?\b(luz nocturna|modo nocturno|night light|night color)\b", "luz_nocturna_off"),
+            (r"\b(luz nocturna|night light|night color)\b", "luz_nocturna"),
+        ),
+        ejecutor=lambda p, _l, m: ajustar_brillo(p, m),
+    ),
+    DefinicionAccion(
+        nombre="telefono",
+        prompt="usar KDE Connect con el teléfono (ring phone, phone battery, send clipboard). parametro = sonar | bateria | portapapeles",
+        evidencia=r"telefono|celular|movil|phone",
+        reglas=(
+            (r"\b(donde esta mi (telefono|celular|movil)|haz sonar mi (telefono|celular|movil)|encuentra mi (telefono|celular)|where is my phone|ring my phone|find my phone)\b", "sonar"),
+            (r"\b(bateria del (telefono|celular|movil)|cuanta bateria tiene (el|mi) (telefono|celular)|phone battery)\b", "bateria"),
+            (r"\b(manda|envia|pasa|comparte|send|share)\w* .*?\b(portapapeles|clipboard|lo que copie)\b.*?\b(telefono|celular|movil|phone)\b", "portapapeles"),
+        ),
+        ejecutor=lambda p, _l, m: kdeconnect_accion(p, m),
+    ),
+    DefinicionAccion(
+        nombre="dictar",
+        prompt="escribir/teclear texto dictado (type/write text). parametro = el texto a escribir",
+        evidencia=r"^\W*(escribe|escribir|dicta|dictar|teclea|type)\b",
+        ejecutor=_ej_dictar,
+    ),
+    DefinicionAccion(
+        nombre="docker_estado",
+        prompt='qué contenedores están corriendo (which containers are running). parametro = ""',
+        evidencia=r"contenedor|container|docker",
+        reglas=((r"\b(estado de docker|que contenedores (estan|hay)|which containers are running|docker status)\b", ""),),
+        ejecutor=_ej_docker_estado,
+    ),
+    DefinicionAccion(
+        nombre="docker_levantar",
+        prompt='levantar/iniciar los contenedores (start containers). parametro = ""',
+        evidencia=r"\b(levant|inici|arranc|sub|enciend|corre|start|run|bring|spin)\w*.*(contenedor|container|docker)",
+        reglas=((r"\b(levanta|inicia|arranca|sube|start|bring up)\w*\s+(los\s+|the\s+)?(contenedores|containers|docker)\b", ""),),
+        ejecutor=lambda _p, _l, m: _ej_docker_compose(True, m),
+    ),
+    DefinicionAccion(
+        nombre="docker_detener",
+        prompt='detener/parar los contenedores (stop containers). parametro = ""',
+        evidencia=r"\b(deten|det|par|apag|baj|stop|shut|kill)\w*.*(contenedor|container|docker)",
+        reglas=((r"\b(deten|detener|para|parar|apaga|baja|stop)\w*\s+(los\s+|the\s+)?(contenedores|containers|docker)\b", ""),),
+        ejecutor=lambda _p, _l, m: _ej_docker_compose(False, m),
+    ),
+    DefinicionAccion(
+        nombre="docker_logs",
+        prompt="ver los logs de un contenedor (container logs). parametro = nombre del contenedor",
+        evidencia=r"\b(logs|registro\w*)\b",
+        ejecutor=_ej_docker_logs,
+    ),
+    DefinicionAccion(
+        nombre="docker_reiniciar",
+        prompt="reiniciar un contenedor (restart container). parametro = nombre del contenedor",
+        evidencia=r"\b(reinici|restart)\w*.*\b(contenedor|container|docker)",
+        ejecutor=_ej_docker_reiniciar,
+    ),
+    DefinicionAccion(
+        nombre="diagnostico",
+        prompt="ver qué consume CPU/memoria, qué puertos están abiertos o cuántas actualizaciones hay. parametro = cpu | memoria | puertos | puerto:<numero> | actualizaciones",
+        evidencia=r"consum|usando|using|puerto|port|actualizacion|update|proceso|process",
+        reglas=(
+            (r"\b(que (proceso\w* )?(esta )?(consum\w*|usa\w*|gasta\w*)|procesos que mas consumen|what (process )?is using)\b.*?\b(cpu|procesador|processor)\b", "cpu"),
+            (r"\b(que (proceso\w* )?(esta )?(consum\w*|usa\w*|gasta\w*)|what (process )?is using)\b.*?\b(ram|memoria|memory)\b", "memoria"),
+            (r"\b(que puertos (tengo|estan|hay) abiertos|puertos abiertos|what ports are open|open ports)\b", "puertos"),
+            (r"\b(hay actualizaciones|cuantas actualizaciones (hay|tengo)|paquetes (hay )?por actualizar|are there (any )?updates|how many updates)\b", "actualizaciones"),
+        ),
+        ejecutor=lambda p, _l, m: diagnostico_sistema(p, m),
+    ),
+    DefinicionAccion(
+        nombre="volumen",
+        prompt="parametro = subir | bajar | silenciar | activar | un número 0-100",
+        evidencia=r"volumen|volume|sonido|sound|silenci|mute",
+        reglas=(
+            (r"\b(sube|subir|aumenta)\w* (el )?volumen|\bturn (the )?volume up|\bturn up the volume|\bvolume up", "subir"),
+            (r"\b(baja|bajar|disminu)\w* (el )?volumen|\bturn (the )?volume down|\bturn down the volume|\bvolume down", "bajar"),
+            (r"\b(silencia|mutea|quita el sonido)|^mute\b", "silenciar"),
+        ),
+        ejecutor=_ej_volumen,
+    ),
+    DefinicionAccion(
+        nombre="multimedia",
+        prompt="parametro = pausa | reproducir | siguiente | anterior",
+        evidencia=r"musica|music|cancion|song|pausa|pause|reproduc|play|tema|track|siguiente|next|anterior|previous",
+        reglas=(
+            (r"\b(pausa|pausar|deten la musica|para la musica|pause)\b", "pausa"),
+            (r"\b(pon|poner|reproduce|reproducir|escuchar)\b.*\b(musica\w*|cancion\w*)|\b(play|listen to) (some )?music\b|^(reproduce|play)\b[!.?]*$", "reproducir"),
+            (r"\b(siguiente cancion|siguiente tema|la siguiente|next song|next track)\b", "siguiente"),
+            (r"\b(cancion anterior|tema anterior|la anterior|previous song|previous track)\b", "anterior"),
+        ),
+        ejecutor=_ej_multimedia,
+    ),
+    DefinicionAccion(
+        nombre="estado_sistema",
+        prompt='temperatura, memoria, disco, GPU, batería, cómo está el PC (system status). parametro = ""',
+        evidencia=(r"temperatura|temperature|memoria|memory|disco|disk|estado|status|como esta|how is|ram|cpu"
+                   r"|procesador|compu|computer|equipo|system|bateria|battery|vram|gpu|grafica"),
+        reglas=(
+            (r"\b(estado|status|nivel)\s+(de|del|of)\s+(la\s+|el\s+|mi\s+|my\s+|the\s+)?"
+             r"(pc|compu\w*|computadora|sistema|equipo|maquina|laptop|portatil|bateria|computer|system|battery)\b", ""),
+            (r"\b(estado del sistema|como esta (el|la) (pc|compu|sistema|equipo)|system status|cuanta (ram|memoria|vram)\b|how much ram\b|(temperatura|uso) (del|de la) (cpu|gpu|grafica|pc|compu|procesador))\b", ""),
+        ),
+        ejecutor=lambda _p, _l, m: estado_sistema(m),
+    ),
+    DefinicionAccion(
+        nombre="perfil_energia",
+        prompt="parametro = rendimiento | equilibrado | ahorro",
+        evidencia=r"rendimiento|performance|equilibrad|balanced|ahorro|saver|perfil|profile|energia|power|modo|mode",
+        reglas=(
+            (r"\b(modo|perfil)\s+(de\s+)?rendimiento\b|\bperformance\s+(mode|profile)\b", "rendimiento"),
+            (r"\b(modo|perfil)\s+equilibrado\b|\bbalanced\s+(mode|profile)\b", "equilibrado"),
+            (r"\b(modo|perfil)\s+(de\s+)?ahorro(\s+de\s+energia)?\b|\bpower[- ]saver\s+(mode|profile)\b", "ahorro"),
+        ),
+        ejecutor=_ej_perfil_energia,
+    ),
+    DefinicionAccion(
+        nombre="buscar_web",
+        prompt="buscar en internet (search the web). parametro = lo que hay que buscar, en el idioma original",
+        evidencia=r"busca|search|internet|google|web|look up",
+        ejecutor=_ej_buscar_web,
+    ),
+    DefinicionAccion(
+        nombre="bloquear_pantalla",
+        prompt='parametro = ""',
+        evidencia=r"bloque|lock",
+        reglas=((r"\bbloquea\w* (la )?(pantalla|sesion|compu|pc)|\block (the )?(screen|computer|pc|session)", ""),),
+        ejecutor=_ej_bloquear_pantalla,
+    ),
+    DefinicionAccion(
+        nombre="actualizar_sistema",
+        prompt='actualizar el sistema, los paquetes o todo (update/upgrade the system). parametro = ""',
+        evidencia=r"actualiz|update|upgrade",
+        reglas=((r"^(?!\W*(como|how|que|what|por que|why|cual)\b).*\b(actualiza\w*|update|upgrade)\b.*\b(todo|sistema|paquetes|equipo|compu|pc|everything|system|packages|computer)\b", ""),),
+        ejecutor=_ej_actualizar_sistema,
+    ),
+    DefinicionAccion(
+        nombre="pregunta",
+        prompt="una pregunta clara de conocimiento general o de programación. parametro = la pregunta completa",
+        reglas=(
+            (r"^(?!.*\b(busca|internet|google|search|copi\w*|copied|portapapeles|clipboard|puerto|port|consum\w*|gpu|grafica)\b)"
+             r"\W*(que es|que son|que significa|como (funciona|se|hago|puedo)|"
+             r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can)|"
+             r"why|explain|difference between)\b", None),
+        ),
+        ejecutor=_ej_pregunta,
+    ),
+    DefinicionAccion(
+        nombre="no_entendido",
+        prompt='muletillas, frases incompletas o sin sentido. parametro = ""',
+    ),
+]
+
+ACCIONES = [a.nombre for a in REGISTRO_ACCIONES]
+PROMPT_COMANDOS = (
+    "Eres el intérprete de comandos de voz de un PC de desarrollo. La frase puede estar en español o en inglés.\n"
+    "Convierte la frase en UNA acción. Los valores fijos de parametro van SIEMPRE en español, tal como aparecen aquí.\n"
+    "Acciones y su parámetro:\n"
+    + "\n".join(f"- {a.nombre}: {a.prompt}" for a in REGISTRO_ACCIONES)
+    + "\nResponde solo el JSON."
+)
 ESQUEMA = {"type": "object",
            "properties": {"accion": {"type": "string", "enum": ACCIONES}, "parametro": {"type": "string"}},
            "required": ["accion", "parametro"]}
+REGLAS = [(patron, a.nombre, param) for a in REGISTRO_ACCIONES for patron, param in a.reglas]
+EVIDENCIA = {a.nombre: a.evidencia for a in REGISTRO_ACCIONES if a.evidencia}
+EJECUTORES = {a.nombre: a.ejecutor for a in REGISTRO_ACCIONES if a.ejecutor}
 
-REGLAS = [  # (regex sobre texto normalizado, acción, parámetro; None = la frase completa)
-    (r"\b(sube|subir|aumenta)\w* (el )?volumen|\bturn (the )?volume up|\bturn up the volume|\bvolume up",
-     "volumen", "subir"),
-    (r"\b(baja|bajar|disminu)\w* (el )?volumen|\bturn (the )?volume down|\bturn down the volume|\bvolume down",
-     "volumen", "bajar"),
-    (r"\b(silencia|mutea|quita el sonido)|^mute\b", "volumen", "silenciar"),
-    (r"\b(pausa|pausar|deten la musica|para la musica|pause)\b", "multimedia", "pausa"),
-    (r"\b(siguiente cancion|siguiente tema|la siguiente|next song|next track)\b", "multimedia", "siguiente"),
-    (r"\b(cancion anterior|tema anterior|la anterior|previous song|previous track)\b", "multimedia", "anterior"),
-    (r"\bbloquea\w* (la )?(pantalla|sesion|compu|pc)|\block (the )?(screen|computer|pc|session)", "bloquear_pantalla", ""),
-    (r"^(?!\W*(como|how|que|what|por que|why|cual)\b).*\b(actualiza\w*|update|upgrade)\b.*\b(todo|sistema|paquetes|equipo|compu|pc|everything|system|packages|computer)\b",
-     "actualizar_sistema", ""),
-    # Preguntas directas, salvo que pida buscar en internet
-    (r"^(?!.*\b(busca|internet|google|search)\b)\W*(que es|que son|que significa|como (funciona|se|hago|puedo)|"
-     r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can)|"
-     r"why|explain|difference between)\b", "pregunta", None),
-]
-
-EVIDENCIA = {  # la acción del modelo solo se acepta si la frase normalizada cumple esta regex
-    "abrir_app": r"\b(abr|lanz|inici|ejecut|pon|open|launch|start|run)\w*",
-    "abrir_proyecto": r"\b(abr|proyecto|repo|open|project)\w*",
-    "docker_estado": r"contenedor|container|docker",
-    "docker_levantar": r"\b(levant|inici|arranc|sub|enciend|corre|start|run|bring|spin)\w*.*(contenedor|container|docker)",
-    "docker_detener": r"\b(deten|det|par|apag|baj|stop|shut|kill)\w*.*(contenedor|container|docker)",
-    "volumen": r"volumen|volume|sonido|sound|silenci|mute",
-    "multimedia": r"musica|music|cancion|song|pausa|pause|reproduc|play|tema|track|siguiente|next|anterior|previous",
-    "estado_sistema": r"temperatura|temperature|memoria|memory|disco|disk|estado|status|como esta|how is|ram|cpu"
-                      r"|procesador|compu|computer|equipo|system",
-    "perfil_energia": r"rendimiento|performance|equilibrad|balanced|ahorro|saver|perfil|profile|energia|power|modo|mode",
-    "buscar_web": r"busca|search|internet|google|web|look up",
-    "bloquear_pantalla": r"bloque|lock",
-    "actualizar_sistema": r"actualiz|update|upgrade",
-}
-
-# Errores recurrentes de Whisper con esta voz/micrófono: "Abre" se transcribe como "Ahora", "A ver", "Aurek"…
-ABRE_MAL_OIDO = r"^(ahora|aurea|aurek|aure|a ver|abra|habre|abri|abrir|ahi|haber|avril|abril|open up)\b,?\s*(a\s+)?"
+# Errores recurrentes de Whisper con esta voz/micrófono:
+# "Abre" -> "Ahora", "A ver", "Aurek"…; "Cierra" -> "Sierra", "Cierre"…
+ABRE_MAL_OIDO = r"^(ahora(\s+es)?|aurea|aurek|aure|a ver|abra|habre|abri|abrir|ahi|haber|avril|abril|open up)\b,?\s*(a\s+)?"
+CIERRA_MAL_OIDO = r"^(sierra|cierre|cierras|serra)\b,?\s*"
 
 
 def app_en(resto):
-    """Nombre de app en lo que sigue a "abre". Whisper a veces repite o mezcla palabras
+    """Nombre de app en lo que sigue a "abre"/"cierra". Whisper a veces repite o mezcla palabras
     («fire, firefox», «farid, firefox»): si la frase completa no es una app, prueba palabra por palabra."""
     resto = resto.strip(" .?!,")
     if resolver_app(resto):
@@ -458,13 +1601,15 @@ def app_en(resto):
 
 
 def corregir(n):
-    m = re.match(ABRE_MAL_OIDO, n)
-    if m:
+    if m := re.match(ABRE_MAL_OIDO, n):
         resto = n[m.end():]
         if re.search(r"\bproyecto\b", resto):
             return "abre " + resto
         if app := app_en(resto):
             return "abre " + app
+    if m := re.match(CIERRA_MAL_OIDO, n):
+        if app := app_en(n[m.end():]):
+            return "cierra " + app
     return n
 
 
@@ -491,20 +1636,148 @@ def ollama(modelo, sistema, usuario, formato=None):
         return json.load(r)["message"]["content"]
 
 
+def ollama_stream(modelo, sistema, usuario):
+    """Genera la respuesta de Ollama oración por oración para poder hablar sin esperar al final."""
+    cuerpo = {"model": modelo, "stream": True, "keep_alive": KEEP_ALIVE,
+              "options": {"temperature": 0, "num_ctx": NUM_CTX},
+              "messages": [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]}
+    req = urllib.request.Request(OLLAMA, json.dumps(cuerpo).encode(), {"Content-Type": "application/json"})
+    buf = ""
+    with urllib.request.urlopen(req, timeout=120) as r:
+        for linea in r:
+            if not linea.strip():
+                continue
+            item = json.loads(linea)
+            buf += item.get("message", {}).get("content", "")
+            while m := re.search(r"([.!?]+(?=\s)|\n+)", buf):
+                fin = m.end()
+                oracion, buf = buf[:fin].strip(), buf[fin:].lstrip()
+                if oracion:
+                    yield oracion
+            if item.get("done"):
+                break
+    if buf.strip():
+        yield buf.strip()
+
+
+NUMEROS = {
+    "un": 1, "una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7,
+    "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quince": 15,
+    "dieciseis": 16, "diecisiete": 17, "dieciocho": 18, "diecinueve": 19, "veinte": 20, "veintiun": 21,
+    "veintiuno": 21, "veintiuna": 21, "veintidos": 22, "veintitres": 23, "veinticuatro": 24, "veinticinco": 25,
+    "veintiseis": 26, "veintisiete": 27, "veintiocho": 28, "veintinueve": 29, "treinta": 30, "cuarenta": 40,
+    "cincuenta": 50, "sesenta": 60, "noventa": 90,
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+    "fifty": 50, "sixty": 60, "ninety": 90,
+}
+_UNIDAD_TIEMPO = r"(?=\s*(segundo|second|sec|minuto|minute|min|hora|hour))"
+
+
+def numeros_en_cifras(n):
+    """«cinco minutos» -> «5 minutos», «media hora» -> «30 minutos»: Whisper escribe con letras los
+    números pequeños. Solo cambia números seguidos de una unidad de tiempo."""
+    for frase, cifra in ((r"\b(una )?hora y media\b", "90 minutos"), (r"\b(media hora|half an hour)\b", "30 minutos"),
+                         (r"\b(un )?cuarto de hora\b", "15 minutos"), (r"\b(a )?quarter of an hour\b", "15 minutes")):
+        n = re.sub(frase, cifra, n)
+    palabras_num = "|".join(sorted(NUMEROS, key=len, reverse=True))
+    # «treinta y cinco», «forty five», «forty-five»
+    n = re.sub(rf"\b({palabras_num})(?:\s+y\s+|[\s-]+)({palabras_num}){_UNIDAD_TIEMPO}",
+               lambda m: str(NUMEROS[m[1]] + NUMEROS[m[2]]) if NUMEROS[m[1]] >= 20 and NUMEROS[m[2]] < 10
+               else m[0], n)
+    return re.sub(rf"\b({palabras_num}){_UNIDAD_TIEMPO}", lambda m: str(NUMEROS[m[1]]), n)
+
+
+def extraer_temporizador(n, texto):
+    """Extrae segundos y nota opcional de frases como «avísame en 10 minutos» o «set a timer for 30 seconds»."""
+    n = numeros_en_cifras(n)
+    m = re.search(
+        r"\b(avisame (?:en|dentro de)|recuerdame (?:en|dentro de)|(?:pon(?:me)? )?(?:un |una )?(?:temporizador|alarma)"
+        r" (?:de|para|por|en)|set a timer for|timer for|remind me in)\s+"
+        r"(\d+)\s*(segundo\w*|second\w*|sec\w*|minuto\w*|minute\w*|min\w*|hora\w*|hour\w*)\s*(.*)",
+        n,
+    )
+    if not m:
+        return None
+    cantidad = int(m.group(2))
+    unidad = m.group(3)
+    factor = 3600 if unidad.startswith(("h",)) else (60 if unidad.startswith(("m",)) else 1)
+    segundos = max(1, cantidad * factor)
+    nota = re.sub(r"^(que|para|de|to|for|about)\s+", "", m.group(4).strip(" .?!,"))
+    return f"{segundos}:{nota}" if nota else str(segundos)
+
+
 def interpretar(texto):
     n = corregir(normalizar(texto))
     if n != normalizar(texto):
         log(f"corregido: {n!r}")
         texto = n
+    # Dictado directo: "escribe ..." / "dicta ..." / "type ..." (con o sin coma tras el verbo)
+    if m := re.match(r"^\W*(escribe|dicta|teclea|type)[,:;]?\s+(.+)$", texto.strip(), flags=re.IGNORECASE):
+        contenido = m.group(2).strip()
+        if not re.search(r"\b(tu contrasena|your password)\b", normalizar(contenido)):
+            return "dictar", contenido
+    # Temporizadores: "avísame en 10 minutos" / "pon un temporizador de 5 minutos"
+    if temp := extraer_temporizador(n, texto):
+        return "temporizador", temp
+    # Diagnóstico de un puerto concreto: "¿qué corre en el puerto 5000?" / "what is running on port 5000?"
+    if m := re.search(r"\b(puerto|port)\s+(\d{2,5})\b", n):
+        return "diagnostico", f"puerto:{m.group(2)}"
+    # Git por voz: "estado del proyecto X", "estado git, X", "último commit de X"
+    # Si la frase no dice «git»/«proyecto», solo es git cuando lo que sigue es un proyecto que existe:
+    # «estado de la compu» o «estado de la batería» son estado_sistema
+    git_explicito = re.search(r"\b(git|stargit|proyecto|project|repo\w*)\b", n)
+    if m := re.search(r"\b(estado\s+git|status\s+git|stargit|(?:estado|status)\s+(?:de\s+git\s*)?(?:del\s+proyecto|de|en|in|of))\s*(?:del\s+proyecto\s+|de\s+|en\s+|in\s+|of\s+|,\s*|\s+)(.+?)[.!?]*$", n):
+        if git_explicito or buscar_proyecto(m.group(2)):
+            return "git_proyecto", f"estado:{m.group(2).strip()}"
+    if m := re.search(r"\b(?:(?:ultimo|last)\s+)?(?:commit|comi)\s+(?:de\s+git\s+)?(?:del\s+proyecto\s+|de\s+|en\s+|of\s+project\s+|of\s+|in\s+)(.+?)[.!?]*$", n):
+        return "git_proyecto", f"commit:{m.group(1).strip()}"   # «commit» ya es explícito
+    # Abrir terminal o lazygit en un proyecto: "abre lazygit en validaciones", "abre la terminal en el proyecto X"
+    if m := re.match(r"^(abre|abrir|open|lanza|launch)\s+(lazygit|(?:la\s+|una\s+|a\s+)?(?:terminal|consola))\s+(en|in)\s+(el\s+proyecto\s+|the\s+project\s+|project\s+)?(.+?)[.!?]*$", n):
+        herr = "lazygit" if "lazygit" in m.group(2) else "terminal"
+        return "terminal_proyecto", f"{herr}:{m.group(5).strip()}"
+    # Docker con más detalle: "logs de X", "reinicia el contenedor X"
+    if m := re.match(r"^(abre\s+|muestra\s+|ver\s+|show\s+|open\s+)?(los\s+|the\s+)?(logs|registros)\s+(del\s+contenedor\s+|de\s+|of\s+container\s+|of\s+|for\s+)(.+?)[.!?]*$", n):
+        return "docker_logs", m.group(5).strip()
+    # «reinicia X» solo es un contenedor si X se llama exactamente así; con «el contenedor X» se aceptan
+    # nombres parecidos. «reinicia la computadora / spotify» no debe acabar en docker.
+    if m := re.match(r"^(reinicia|reiniciar|restart)\s+(el\s+contenedor\s+|the\s+container\s+|container\s+)?(.+?)[.!?]*$", n):
+        if cont := resolver_contenedor(m.group(3), aproximado=bool(m.group(2))):
+            return "docker_reiniciar", cont
+        if m.group(2):
+            return "docker_reiniciar", m.group(3).strip()   # responderá que no existe
     for patron, accion, param in REGLAS:
         if re.search(patron, n):
             return accion, texto if param is None else param
+    if m := re.search(r"\b(volumen|volume)\b.*?\b(\d{1,3})\b", n):
+        return "volumen", m.group(2)
+    if m := re.search(r"\b(brillo|brightness)\b.*?\b(\d{1,3})\b", n):
+        return "brillo", m.group(2)
+    if m := re.search(r"\b(manda|mueve|pasa|envia|move|send)\w*\b.*\b(escritorio|desktop)\s*(\d)\b", n):
+        return "ventana", f"mover_escritorio_{m.group(3)}"
+    if m := re.search(r"\b(escritorio|desktop)\s*(\d)\b", n):
+        return "ventana", f"escritorio_{m.group(2)}"
     if re.match(r"^\W*(busca|buscar|buscame|search|look up|google)\b", n) and extraer_busqueda(texto):
         return "buscar_web", extraer_busqueda(texto)
-    # "abre X" / "open X" donde X es una app conocida: sin pasar por el modelo
-    m = re.match(r"^(abre|abrir|open|launch|lanza|inicia|ejecuta)\s+(.+?)[.!?]*$", n)
-    if m and "proyecto" not in m.group(2) and "project" not in m.group(2) and (app := app_en(m.group(2))):
+    # Tareas configuradas en config.json: antes de abrir_app para que "ejecuta X" priorice tareas
+    if TAREAS and (m := re.match(r"^(ejecuta|corre|lanza|inicia|run|start)\s+(la tarea\s+|the task\s+|task\s+)?(.+?)[.!?]*$", n)):
+        if tarea := resolver_tarea(m.group(3)):
+            return "ejecutar_tarea", tarea
+    # "abre el proyecto X" / "open project X"
+    if m := re.match(r"^(abre|abrir|open)\s+(el\s+|the\s+)?(proyecto|repositorio|repo|project)\s+(.+?)[.!?]*$", n):
+        return "abrir_proyecto", m.group(4).strip()
+    # "abre X" / "open X" / "muestra X" donde X es una app conocida: sin pasar por el modelo
+    m = re.match(r"^((tambien\s+|also\s+)?(abre|abrir|muestra|mostrar|open|launch|lanza|inicia|ejecuta|show))\s+(.+?)[.!?]*$", n)
+    if m and "proyecto" not in m.group(4) and "project" not in m.group(4) and (app := app_en(m.group(4))):
         return "abrir_app", app
+    # "cierra X" / "close X" donde X es la ventana actual o una app conocida
+    m = re.match(r"^(cierra|cierro|cerrar|close|quit)\s+(.+?)[.!?]*$", n)
+    if m:
+        if re.search(r"\b(ventana\w*|window\w*|esto|this)\b", m.group(2)):
+            return "cerrar_app", ""
+        if app := app_en(m.group(2)):
+            return "cerrar_app", app
     try:
         r = json.loads(ollama(MODELO_COMANDOS, PROMPT_COMANDOS, texto, ESQUEMA))
         accion, param = r.get("accion", "no_entendido"), r.get("parametro", "")
@@ -517,226 +1790,45 @@ def interpretar(texto):
         log(f"descartado {accion}({param!r}): la frase no lo respalda")
         return "no_entendido", ""
     numero = re.search(r"\b(\d{1,3})\b", n)
-    if accion == "volumen" and numero:
+    if accion in ("volumen", "brillo") and numero:
         param = numero.group(1)
+    if accion == "diagnostico" and normalizar(param) in ("gpu", "grafica", "vram"):
+        accion, param = "estado_sistema", ""
     if accion == "pregunta" and len(n.split()) < 3:
-        accion = "no_entendido"
+        accion, param = "no_entendido", ""
     if accion == "buscar_web":
         param = extraer_busqueda(texto) or param
     # "¿Cómo actualizo un paquete de npm?" es una pregunta, no una orden de actualizar el sistema
     if accion == "actualizar_sistema" and re.match(r"^\W*(como|how|que|what|por que|why|cual)\b", n):
         accion, param = "pregunta", texto
-    if accion == "abrir_proyecto" and resolver_app(param):
+    if accion == "abrir_proyecto" and not re.search(r"\b(proyecto|repositorio|repo|project)\b", n) and resolver_app(param):
         accion = "abrir_app"
+    if accion == "abrir_app" and not resolver_app(param):
+        return "no_entendido", ""
+    if accion == "cerrar_app" and param and not resolver_app(param):
+        return "no_entendido", ""
+    if accion == "ventana" and param not in ATAJOS_KWIN:
+        return "no_entendido", ""
+    if accion == "docker_reiniciar":
+        cont = resolver_contenedor(param, aproximado=True)
+        if not cont:
+            return "no_entendido", ""
+        param = cont
+    if accion == "ejecutar_tarea":
+        tarea = resolver_tarea(param)
+        if not tarea:
+            return "no_entendido", ""
+        param = tarea
     return accion, param
-
-
-# --- Acciones (lista blanca) --------------------------------------------------------
-def lanzar(cmd):
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-
-
-def palabras(nombre):
-    nombre = re.sub(r"([a-z])([A-Z])", r"\1 \2", nombre)
-    return set(normalizar(nombre).replace(".", " ").replace("_", " ").replace("-", " ").split())
-
-
-def proyectos():
-    if not PROYECTOS.is_dir():
-        return []
-    return [d for d in PROYECTOS.iterdir() if (d / ".git").is_dir() and not d.name.startswith("_")]
-
-
-def buscar_proyecto(pedido):
-    objetivo = palabras(pedido) - {"proyecto", "el", "la", "de", "del", "repo", "repositorio", "project", "the"}
-    mejor, puntaje = None, 0.0
-    for d in proyectos():
-        nombre = palabras(d.name)
-        p = sum(max((difflib.SequenceMatcher(None, o, w).ratio() for w in nombre), default=0)
-                for o in objetivo) / max(len(objetivo), 1)
-        if p > puntaje:
-            mejor, puntaje = d, p
-    return mejor if puntaje >= 0.75 else None
-
-
-def pista_whisper():
-    """Vocabulario de contexto para Whisper. Lista de términos, no frases: con frases de ejemplo
-    Whisper tiende a cortar las transcripciones."""
-    nombres = [d.name for d in proyectos()]
-    # "Empresa.Modulo.Sub" -> "Modulo Sub" cuando el prefijo se repite en varios repos
-    prefijos = [n.split(".")[0] for n in nombres if "." in n]
-    nombres = [n.split(".", 1)[1] if "." in n and prefijos.count(n.split(".")[0]) >= 3 else n for n in nombres]
-    nombres = [n.replace(".", " ") for n in nombres]
-    return ("VS Code, Visual Studio Code, Firefox, kitty, htop, lazygit, lazydocker, MongoDB Compass, Docker, "
-            + ", ".join(n for n in nombres if n))
-
-
-def mpris(metodo, solo_activo=False):
-    r = subprocess.run(["busctl", "--user", "list", "--no-legend"], capture_output=True, text=True)
-    reproductores = [l.split()[0] for l in r.stdout.splitlines() if l.startswith("org.mpris.MediaPlayer2.")]
-    if not reproductores:
-        return False
-    for nombre in reproductores:
-        subprocess.run(["busctl", "--user", "call", nombre, "/org/mpris/MediaPlayer2",
-                        "org.mpris.MediaPlayer2.Player", metodo], capture_output=True)
-        if solo_activo:
-            break
-    return True
-
-
-def temperatura_cpu():
-    for hw in Path("/sys/class/hwmon").iterdir():
-        try:
-            if (hw / "name").read_text().strip() in ("coretemp", "k10temp", "zenpower"):   # Intel / AMD
-                return int((hw / "temp1_input").read_text()) // 1000
-        except OSError:
-            continue
-    return None
-
-
-def temperatura_gpu_nvidia():
-    if not shutil.which("nvidia-smi"):
-        return None
-    r = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
-                       capture_output=True, text=True, timeout=5)
-    t = r.stdout.split()
-    return int(t[0]) if r.returncode == 0 and t and t[0].isdigit() else None
-
-
-def perfil_energia_actual():
-    """Perfil de power-profiles-daemon. /sys/firmware/acpi/platform_profile no existe en todos los equipos."""
-    r = subprocess.run(["busctl", "--system", "get-property", "org.freedesktop.UPower.PowerProfiles",
-                        "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles",
-                        "ActiveProfile"], capture_output=True, text=True)
-    m = re.search(r'"(.+)"', r.stdout)
-    if m:
-        return m.group(1)
-    f = Path("/sys/firmware/acpi/platform_profile")
-    return f.read_text().strip() if f.exists() else "?"
-
-
-def estado_sistema(m):
-    info = dict(l.split(":", 1) for l in Path("/proc/meminfo").read_text().splitlines())
-    total = int(info["MemTotal"].split()[0]) / 1048576
-    libre = int(info["MemAvailable"].split()[0]) / 1048576
-    perfil = perfil_energia_actual()
-    gpu = temperatura_gpu_nvidia()
-    return m["estado"].format(t=temperatura_cpu() or "?", gpu=m["gpu"].format(t=gpu) if gpu else "",
-                              u=total - libre, m=total, d=shutil.disk_usage("/").free / 1e9,
-                              p=m["perfiles"].get(perfil, perfil))
-
-
-def comando_actualizar():
-    if COMANDO_ACTUALIZAR:
-        return COMANDO_ACTUALIZAR
-    pasos = []
-    # yay y paru piden sudo por su cuenta; no deben ejecutarse como root
-    for cmd in ("yay -Syu", "paru -Syu", "sudo pacman -Syu", "sudo dnf upgrade --refresh"):
-        if shutil.which(cmd.removeprefix("sudo ").split()[0]):
-            pasos.append(cmd)
-            break
-    if shutil.which("flatpak"):
-        pasos.append("flatpak update")
-    return "; ".join(pasos) or None
 
 
 def ejecutar(accion, param, lang):
     """Devuelve el texto de respuesta en el idioma indicado."""
     m = MSG[lang]
-
-    if accion == "abrir_app":
-        app = resolver_app(param)
-        if not app:
-            return m["app_no"].format(x=param)
-        lanzar(app.cmd)
-        return m["abriendo"].format(x=app.nombre)
-
-    if accion == "abrir_proyecto":
-        d = buscar_proyecto(param)
-        if not d:
-            return m["proyecto_no"].format(x=param)
-        lanzar(["code", str(d)])
-        return m["proyecto"].format(x=d.name)
-
-    if accion == "docker_estado":
-        r = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True)
-        nombres = [n.replace("-local", "").replace("-", " ") for n in r.stdout.split()]
-        if not nombres:
-            return m["docker_0"]
-        return m["docker_n"].format(n=len(nombres), x=", ".join(nombres))
-
-    if accion in ("docker_levantar", "docker_detener"):
-        up = accion == "docker_levantar"
-        if not COMPOSE:
-            return m["docker_sin_compose"]
-        notificar("Docker", m["docker_up" if up else "docker_stop"])
-        r = subprocess.run(["docker", "compose", "-f", str(COMPOSE)] + (["up", "-d"] if up else ["stop"]),
-                           capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            log(r.stderr)
-            return m["docker_error"]
-        return m["docker_up_ok" if up else "docker_stop_ok"]
-
-    if accion == "volumen":
-        sink = "@DEFAULT_AUDIO_SINK@"
-        p = normalizar(param)
-        if p.isdigit():
-            subprocess.run(["wpctl", "set-volume", "-l", "1.0", sink, f"{min(int(p), 100)}%"])
-            return m["vol_n"].format(x=min(int(p), 100))
-        if p == "silenciar":
-            subprocess.run(["wpctl", "set-mute", sink, "1"])
-            return ""
-        if p == "activar":
-            subprocess.run(["wpctl", "set-mute", sink, "0"])
-            return m["vol_on"]
-        subprocess.run(["wpctl", "set-mute", sink, "0"])
-        subprocess.run(["wpctl", "set-volume", "-l", "1.0", sink, "10%+" if p == "subir" else "10%-"])
-        return ""
-
-    if accion == "multimedia":
-        metodo = {"pausa": "Pause", "reproducir": "Play", "siguiente": "Next", "anterior": "Previous"}.get(param)
-        if not metodo:
-            return m["media_no"]
-        if not mpris(metodo, solo_activo=metodo in ("Play", "Next", "Previous")):
-            return m["media_0"]
-        return ""
-
-    if accion == "estado_sistema":
-        return estado_sistema(m)
-
-    if accion == "perfil_energia":
-        perfil = {"rendimiento": "performance", "equilibrado": "balanced", "ahorro": "power-saver"}.get(param)
-        if not perfil:
-            return m["perfil_no"]
-        subprocess.run(["busctl", "--system", "set-property", "org.freedesktop.UPower.PowerProfiles",
-                        "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles",
-                        "ActiveProfile", "s", perfil])
-        return m["perfil"].format(x=m["perfiles"][perfil])
-
-    if accion == "buscar_web":
-        lanzar(["firefox", "--search", param])
-        return m["buscando"].format(x=param)
-
-    if accion == "bloquear_pantalla":
-        subprocess.run(["loginctl", "lock-sessions"])
-        return ""
-
-    if accion == "actualizar_sistema":
-        # En una terminal: sudo necesita tu contraseña y así ves el progreso. El asistente nunca la maneja.
-        cmd = comando_actualizar()
-        if not cmd:
-            return m["actualizar_no"]
-        lanzar(cmd_terminal("bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'))
-        return m["actualizando"]
-
-    if accion == "pregunta":
-        notificar(m["pensando"], param, "dialog-question")
-        return ollama(MODELO_PREGUNTAS, m["responde"], param).strip()
-
     if accion == "error_ollama":
         return m["ollama_error"]
-
-    return m["no_entendi"]
+    fn = EJECUTORES.get(accion)
+    return fn(param, lang, m) if fn else m["no_entendi"]
 
 
 # --- Voz a texto ---------------------------------------------------------------------
@@ -805,21 +1897,33 @@ class WhisperCUDA:
         return "".join(s.text for s in segmentos).strip(), lang
 
 
+AFIRMATIVO = r"^\W*(si|sii|confirma\w*|dale|adelante|claro|ok|okay|yes|yep|yeah|confirm\w*|sure|go ahead)\b"
+NEGATIVO = r"^\W*(no|cancela\w*|olvida\w*|nada|cancel\w*|never\s*mind|stop)\b"
+
+
 # --- Bucle principal ---------------------------------------------------------------
 class Asistente:
     def __init__(self):
         t = time.time()
+        validar_config()
         self.whisper = WhisperCUDA() if motor_whisper() == "cuda" else WhisperOpenVINO()
         self.voz = Voz()
         self.activar = threading.Event()
         self.detener = threading.Event()
         self.escuchando = False
+        self.reescuchar = False  # el atajo interrumpió la voz: escuchar en cuanto termine atender()
+        self.pendiente = None   # (accion, param, lang, expira) para confirmación en 1 paso
+        _restaurar_volumen()
         signal.signal(signal.SIGUSR1, self._senal)
         log(f"listo en {time.time() - t:.1f}s (Whisper {self.whisper.descripcion}, "
+            f"VAD: {'Silero' if _VAD.session else 'RMS'}, "
             f"{len({a.id for a in APPS.values()})} apps, voces: {', '.join(self.voz.voces)})")
 
     def _senal(self, *_):
-        if self.escuchando:
+        if self.voz.hablando:
+            self.voz.callar()
+            self.reescuchar = True
+        elif self.escuchando:
             self.detener.set()
         else:
             self.activar.set()
@@ -830,32 +1934,41 @@ class Asistente:
         except Exception as e:
             log(f"no se pudo precargar {MODELO_COMANDOS}: {e}")
 
-    def atender(self):
+    def _grabar_y_transcribir(self, espera_inicio=ESPERA_INICIO):
         self.escuchando = True
         self.detener.clear()
-        notificar("Escuchando… / Listening…", "", segundos=15)
-        sonido("button-pressed", esperar=True)
-        audio = grabar(self.detener)
+        audio = grabar(self.detener, espera_inicio=espera_inicio)
         self.escuchando = False
         if audio is None:
-            notificar("No escuché nada / Didn't hear anything", "", segundos=2)
-            return
-
+            return None, None, 0.0
         t = time.time()
         guardar_grabacion(audio)
-        # Sin language fijo: Whisper detecta si es español o inglés
         texto, lang_stt = self.whisper.transcribir(audio, pista_whisper())
-        t_stt = time.time() - t
-        if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES):
-            notificar("No te entendí / Didn't catch that", "", segundos=2)
-            return
-        lang = idioma(texto, lang_stt)
-        notificar(f"«{texto}»", "…")
+        return texto, lang_stt, time.time() - t
 
-        t = time.time()
-        accion, param = interpretar(texto)
-        t_llm = time.time() - t
-        log(f"«{texto}» [{lang}] -> {accion}({param!r})  [voz {t_stt:.1f}s, intención {t_llm:.1f}s]")
+    def _ejecutar_y_responder(self, texto, accion, param, lang):
+        if accion == "pregunta":
+            m = MSG[lang]
+            notificar(m["pensando"], param, "dialog-question", segundos=15)
+            try:
+                oraciones = ollama_stream(MODELO_PREGUNTAS, m["responde"], param)
+                primera = [True]
+
+                def avance(parcial):
+                    if primera:            # el sonido de éxito, solo cuando ya hay respuesta
+                        primera.clear()
+                        sonido("completion-success")
+                    notificar(f"«{texto}»", parcial, "dialog-information", segundos=15)
+
+                respuesta = self.voz.decir_stream(oraciones, lang, al_avanzar=avance)
+                if not respuesta:
+                    notificar(f"«{texto}»", m["no_entendi"], "dialog-warning", segundos=5)
+            except Exception as e:
+                log(f"error en pregunta en streaming: {e}")
+                sonido("completion-fail")
+                notificar(f"«{texto}»", m["ollama_error"], "dialog-warning", segundos=5)
+                self.voz.decir(m["ollama_error"], lang)
+            return
 
         try:
             respuesta = ejecutar(accion, param, lang)
@@ -865,10 +1978,61 @@ class Asistente:
             respuesta, ok = MSG[lang]["fallo"], False
 
         sonido("completion-success" if ok else "completion-fail")
-        notificar(f"«{texto}»", respuesta or "✓", "dialog-information" if ok else "dialog-warning",
-                  segundos=15 if accion == "pregunta" else 5)
+        notificar(f"«{texto}»", respuesta or "✓", "dialog-information" if ok else "dialog-warning", segundos=5)
         if respuesta:
             self.voz.decir(respuesta, lang)
+
+    def atender(self):
+        notificar("Escuchando… / Listening…", "", segundos=15)
+        sonido("button-pressed", esperar=True)
+        texto, lang_stt, t_stt = self._grabar_y_transcribir()
+        if texto is None:
+            notificar("No escuché nada / Didn't hear anything", "", segundos=2)
+            return
+        if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES):
+            notificar("No te entendí / Didn't catch that", "", segundos=2)
+            return
+
+        n = normalizar(texto)
+        lang = idioma(texto, lang_stt)
+        # Si había una confirmación pendiente vigente y el usuario respondió con el atajo
+        if self.pendiente and time.time() < self.pendiente[3]:
+            p_accion, p_param, p_lang, _ = self.pendiente
+            self.pendiente = None
+            if re.search(AFIRMATIVO, n):
+                self._ejecutar_y_responder(texto, p_accion, p_param, p_lang)
+                return
+            if re.search(NEGATIVO, n):
+                msg = MSG[p_lang]["cancelado"]
+                notificar(f"«{texto}»", msg, "dialog-information", segundos=4)
+                self.voz.decir(msg, p_lang)
+                return
+        self.pendiente = None
+
+        notificar(f"«{texto}»", "…")
+        t = time.time()
+        accion, param = interpretar(texto)
+        t_llm = time.time() - t
+        log(f"«{texto}» [{lang}] -> {accion}({param!r})  [voz {t_stt:.1f}s, intención {t_llm:.1f}s]")
+
+        pregunta_conf = MSG[lang].get(f"confirmar_{accion}") if accion in CONFIRMAR else None
+        if pregunta_conf:
+            self.pendiente = (accion, param, lang, time.time() + 15.0)
+            notificar(f"«{texto}»", pregunta_conf, "dialog-question", segundos=8)
+            self.voz.decir(pregunta_conf, lang)
+            sonido("button-pressed", esperar=True)
+            resp, _, _ = self._grabar_y_transcribir(espera_inicio=4.0)
+            if resp and re.search(AFIRMATIVO, normalizar(resp)):
+                self.pendiente = None
+                self._ejecutar_y_responder(texto, accion, param, lang)
+            elif resp is not None:
+                self.pendiente = None
+                msg = MSG[lang]["cancelado"]
+                notificar(f"«{resp}»", msg, "dialog-information", segundos=4)
+                self.voz.decir(msg, lang)
+            return
+
+        self._ejecutar_y_responder(texto, accion, param, lang)
 
     def correr(self):
         threading.Thread(target=self.precargar_llm, daemon=True).start()
@@ -880,7 +2044,11 @@ class Asistente:
                 except Exception as e:
                     log(f"error: {e}")
                     notificar("Error del asistente", str(e), "dialog-error")
+                # Pulsaciones durante el proceso se ignoran, salvo la que interrumpió la voz
                 self.activar.clear()
+                if self.reescuchar:
+                    self.reescuchar = False
+                    self.activar.set()
 
 
 if __name__ == "__main__":

@@ -30,19 +30,33 @@ flowchart LR
 |---|---|---|
 | "Abre kitty" / "Abre la calculadora" | "Open Firefox" / "Open MongoDB Compass" | Abre cualquier app instalada |
 | "Abre htop" / "Abre lazygit" | "Open lazydocker" | Herramienta de consola en la terminal |
+| "Cierra Spotify" / "Cierra la ventana" | "Close Firefox" / "Close this window" | Cierra la app como la X de la ventana (vía KWin) |
+| "Maximiza" / "Manda esto a la otra pantalla" / "Escritorio 2" | "Minimize" / "Show desktop" | Ventanas y escritorios con los atajos de KWin |
 | "Abre el proyecto de validaciones" | "Open the billing project" | Abre el repo en VS Code (búsqueda aproximada) |
+| "Abre lazygit en validaciones" / "Abre la terminal en el proyecto X" | "Open a terminal in project X" | Terminal o lazygit en la carpeta del proyecto |
+| "Estado del proyecto X" / "Último commit de X" | "Last commit of X" | Rama, cambios y commits por subir/bajar (solo lectura) |
+| "Ejecuta los tests de validaciones" | "Run build backend" | Tarea de la lista `tareas` de `config.json`, en la terminal |
 | "¿Qué contenedores tengo corriendo?" | "What containers are running?" | Lista los contenedores |
-| "Levanta / detén los contenedores" | "Start / stop the containers" | `docker compose up -d` / `stop` |
+| "Levanta / detén los contenedores" | "Start / stop the containers" | `docker compose up -d` / `stop` (detener pide confirmación) |
+| "Logs de api" / "Reinicia el contenedor mongo" | "Restart container redis" | `docker logs -f` en la terminal / `docker restart` (pide confirmación) |
 | "Sube el volumen" / "Pon el volumen al 30" | "Turn up the volume" / "Set the volume to 30" | Volumen con `wpctl` |
-| "Pausa la música" / "Siguiente canción" | "Pause" / "Next song" | Reproductor vía MPRIS |
-| "¿Cómo está la compu?" | "How is the computer doing?" | Temperatura, RAM, disco y perfil de energía |
+| "Pausa la música" / "Pon música" / "Siguiente canción" | "Pause" / "Play some music" / "Next song" | Reproductor vía MPRIS (abre Spotify si no hay ninguno) |
+| "Sube el brillo" / "Activa la luz nocturna" | "Brightness up" / "Turn off night light" | Brillo (PowerDevil) y luz nocturna de KWin |
+| "Avísame en cinco minutos que saque la ropa" | "Set a timer for 10 minutes" | Temporizador con notificación y voz |
+| "Lee / resume / traduce lo que copié" | "Summarize the clipboard" | Portapapeles de Klipper + Ollama (no lee contraseñas en voz alta) |
+| "Escribe hola mundo" | "Type hello world" | Copia el texto dictado al portapapeles para pegarlo con Ctrl+V |
+| "¿Dónde está mi teléfono?" / "Batería del teléfono" | "Ring my phone" | KDE Connect |
+| "¿Cómo está la compu?" / "Estado de la batería" | "How is the computer doing?" | Temperatura de CPU y GPU, RAM, disco, batería, red y perfil de energía |
+| "¿Qué proceso usa más CPU?" / "¿Qué corre en el puerto 5000?" / "¿Hay actualizaciones?" | "Open ports" | Diagnóstico rápido del sistema |
 | "Modo rendimiento" | "Switch to performance mode" | Perfil de energía (power-profiles) |
 | "Busca en internet el clima en San José" | "Search the web for Python tutorials" | Búsqueda en Firefox |
 | "Bloquea la pantalla" | "Lock the screen" | Bloquea la sesión |
 | "Actualiza todo" / "Actualiza el sistema" | "Update everything" | Abre la terminal con la actualización del sistema |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
-Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase. Si pulsas el atajo otra vez mientras escucha, corta la grabación.
+Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase: la voz se detecta con **Silero VAD**, que la distingue de la música, y mientras escucha baja el volumen del sistema al 20 %. Si pulsas el atajo otra vez mientras escucha, corta la grabación; si lo pulsas mientras habla, se calla y vuelve a escuchar. Las respuestas a preguntas se leen oración por oración mientras Ollama las genera.
+
+Las acciones de la lista `confirmar` preguntan antes («¿Confirmas detener los contenedores?») y esperan un «sí» o «no».
 
 ## Requisitos
 
@@ -97,6 +111,8 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `terminal` | `kitty` | Terminal para las herramientas de consola |
 | `apps_terminal` | `htop`, `btop`, `lazygit`… | Herramientas de consola que se pueden abrir (solo las instaladas) |
 | `alias_apps` | `{}` | Nombres extra → id del `.desktop`, p. ej. `{"mongo": "com.mongodb.Compass"}` |
+| `tareas` | `{}` | Comandos que se pueden ejecutar por voz, p. ej. `{"tests de validaciones": "dotnet test ~/Proyectos/Validaciones"}`. Nada fuera de esta lista |
+| `confirmar` | `["docker_detener", "docker_reiniciar"]` | Acciones que piden confirmación por voz antes de ejecutarse |
 | `modelo_comandos` | `llama3.2` | Modelo de Ollama que interpreta los comandos |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
@@ -132,6 +148,15 @@ journalctl --user -u asistente-voz -f
 
 Cada comando se registra así: `«texto» [idioma] -> acción(parámetro) [voz 1.1s, intención 0.0s]`.
 
+**Probar las reglas sin micrófono** (después de cambiar reglas o frases):
+
+```bash
+venv/bin/python pruebas/test_frases.py            # sin LLM: solo reglas y salvaguardas
+venv/bin/python pruebas/test_frases.py --con-llm  # pasa también por Ollama
+```
+
+`pruebas/frases.json` guarda frase → acción esperada, incluidas transcripciones reales con errores («Aure, Fire, Firefox»). Cuando una frase falle, añádela ahí.
+
 **Transcribe mal**: las últimas 10 grabaciones se guardan en `grabaciones/` para poder analizarlas. Lecciones aprendidas:
 - La pista de vocabulario (`initial_prompt`) debe ser una **lista de términos**, no frases de ejemplo: con frases, Whisper corta las transcripciones.
 - Whisper `small` se queda corto en español. `medium` es el mejor equilibrio entre precisión y velocidad.
@@ -161,6 +186,8 @@ wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
 ```
 asistente.py            # el asistente (configuración, reglas, acciones)
 config.example.json     # plantilla de configuración
+TODO.md                 # ideas y próximos ajustes
+pruebas/                # frases de prueba y salvaguardas (python pruebas/test_frases.py)
 instalar.sh             # instalación para el usuario actual
 requirements*.txt       # comunes + -intel (OpenVINO) / -nvidia (faster-whisper)
 systemd/                # servicio de usuario y entrada del menú (atajo)
