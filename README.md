@@ -1,11 +1,12 @@
 # Asistente de voz local para KDE
 
-Asistente de voz **100 % local y offline** para Linux con KDE Plasma. Pulsas un atajo, hablas en **español o inglés**, y abre aplicaciones o proyectos, controla Docker, el volumen y la música, consulta el estado del equipo o responde preguntas. Contesta en voz alta en el mismo idioma.
+Asistente de voz **100 % local y offline** para Linux con KDE Plasma. Pulsas un atajo o lo llamas por su nombre (**"Oye Nova"**, opcional), hablas en **español o inglés**, y abre aplicaciones o proyectos, controla Docker, el volumen y la música, consulta el estado del equipo o responde preguntas. Contesta en voz alta en el mismo idioma.
 
 Nada sale de tu equipo: la transcripción, la interpretación y la voz corren en tu CPU/GPU.
 
 ```mermaid
 flowchart LR
+    W["«Oye Nova» (opcional)<br/>Whisper base · CPU"] --> B
     A[Atajo de teclado] --> B[Grabación<br/>PipeWire + detección de silencio]
     B --> C[Whisper<br/>OpenVINO · Intel GPU/CPU<br/>faster-whisper · NVIDIA]
     C --> D{¿Regla rápida?}
@@ -55,6 +56,27 @@ flowchart LR
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
 Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase: la voz se detecta con **Silero VAD**, que la distingue de la música, y mientras escucha baja el volumen del sistema al 20 %. Si pulsas el atajo otra vez mientras escucha, corta la grabación; si lo pulsas mientras habla, se calla y vuelve a escuchar. Las respuestas a preguntas se leen oración por oración mientras Ollama las genera.
+
+## Palabra de activación
+
+Opcional y desactivada por defecto: con ella el **micrófono queda abierto todo el tiempo** (KDE muestra el indicador). Actívala en `config.json`:
+
+```json
+"nombre": "Hades",
+"palabra_activacion": "hades",
+"umbral_activacion": 0.87
+```
+
+Responde a "Hades", "Oye Hades" y "Hey Hades" (cámbialas con `variantes_activacion`), de corrido ("Oye Hades, abre kitty") o con pausa ("Oye Hades" → aviso → "abre kitty"). Funciona en dos fases para no gastar recursos ni activarse por error:
+
+1. Silero VAD escucha continuamente. Cuando alguien empieza a hablar, **Whisper base** en la CPU (~0,35 s) transcribe los primeros 2 segundos y los compara, con tolerancia, con la palabra de activación.
+2. Si se parece, el Whisper principal transcribe la frase completa y **confirma** antes de activar nada. Esa transcripción es la misma que se usa para el comando, así que no añade trabajo.
+
+**Elige un nombre que no se confunda con frases comunes.** Medido con voces sintéticas y frases trampa:
+- **"Nova"** suena como "no va": «y no va a llegar» puntúa 0,83 y «Hey Nora» 0,86, muy cerca del umbral, y Whisper suele escribirlo como "Noah".
+- **"Hades"** tiene más margen: «¿qué haces?», «haces muy bien tu trabajo», «hey these», «ladies» y «Andes» se quedan en ≤ 0,80. Whisper tiny lo oye como «Hitties» u «others», por eso el filtro usa Whisper base.
+
+El journal registra cada candidato (`activación: «…» filtro 0.92, confirmación 0.71 -> ACTIVA`) y los últimos 20 intentos se guardan en `grabaciones/activacion/` para ajustar el umbral con tu voz.
 
 Las acciones de la lista `confirmar` preguntan antes («¿Confirmas detener los contenedores?») y esperan un «sí» o «no».
 
@@ -121,6 +143,10 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `whisper_precision` | `int8_float16` | Precisión en la GPU NVIDIA. `float16` ocupa el doble de VRAM |
 | `comando_actualizar` | se detecta | Comando de "actualiza todo", p. ej. `"yay -Syu; flatpak update"`. Sin definir: `yay`/`paru`/`pacman` en Arch o `dnf` en Fedora, más `flatpak update` |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
+| `nombre` | `Nova` | Nombre del asistente en notificaciones y respuestas |
+| `palabra_activacion` | `""` | Frase que activa el asistente, p. ej. `"hades"`. `""` = solo atajo |
+| `variantes_activacion` | `oye …`, `hey …` | Otras formas aceptadas |
+| `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
 
 Después de cambiar algo:
 
@@ -174,10 +200,13 @@ wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
 
 **"¿Cómo está la compu?" sin perfil de energía**: el perfil se lee de `power-profiles-daemon`; actívalo con `sudo systemctl enable --now power-profiles-daemon`.
 
+**`Language token id -1 not found`**: la detección automática de idioma de OpenVINO Whisper falla con algunos audios. `generar_openvino()` reintenta en español.
+
 **NPU**: OpenVINO detecta el NPU de Intel, pero el paquete `intel-npu-driver` de Fedora no incluye el compilador del NPU, así que la compilación falla con `ZE_RESULT_ERROR_UNSUPPORTED_FEATURE`. Cuando esté disponible, basta con poner `"NPU"` primero en `WHISPER_DISPOSITIVOS`.
 
 ## Privacidad
 
+- Con la palabra de activación, el **micrófono está abierto continuamente**. El audio se analiza en memoria; para poder ajustar el umbral se guardan los últimos 20 candidatos a activación en `grabaciones/activacion/`, incluidos los rechazados, que pueden contener fragmentos de otras conversaciones.
 - Todo se procesa localmente. La única conexión de red es la descarga inicial de los modelos desde Hugging Face.
 - `grabaciones/` guarda tus últimos 10 comandos de voz solo en tu equipo, para depuración, y está en `.gitignore`.
 

@@ -7,9 +7,11 @@ respuesta hablada con Piper en el mismo idioma + notificación.
 Se activa enviando SIGUSR1 al servicio (eso hace el atajo):
     systemctl --user kill -s USR1 --kill-whom=main asistente-voz
 Una segunda pulsación mientras escucha deja de grabar en ese momento.
+Con `palabra_activacion` en config.json también se activa diciendo su nombre ("Oye Nova, abre kitty").
 
 Logs: journalctl --user -u asistente-voz -f
 """
+import collections
 import configparser
 import difflib
 import json
@@ -49,7 +51,8 @@ def _cargar_config():
 CFG = _cargar_config()
 CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps", "tareas", "confirmar",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
-              "whisper_precision", "comando_actualizar", "hablar"}
+              "whisper_precision", "comando_actualizar", "hablar", "nombre", "palabra_activacion",
+              "variantes_activacion", "umbral_activacion"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
 WHISPER_MOTOR = CFG.get("whisper", "auto")
@@ -116,6 +119,20 @@ BLOQUE = 512                  # 32 ms (tamaño de ventana de Silero VAD a 16 kHz
 ESPERA_INICIO = 5.0           # segundos esperando a que empieces a hablar
 SILENCIO_FIN = 1.0            # segundos de silencio que cierran la frase
 MAX_GRABACION = 15.0
+
+# Nombre del asistente: notificaciones, respuestas y pista de vocabulario de Whisper
+NOMBRE = CFG.get("nombre", "Nova")
+# Palabra de activación ("" = solo atajo de teclado; así el micrófono no queda abierto). Un Whisper pequeño
+# la busca al inicio de cada frase que escucha y el modelo principal la confirma antes de activar nada.
+PALABRA_ACTIVACION = CFG.get("palabra_activacion", "").strip().lower()
+VARIANTES_ACTIVACION = CFG.get("variantes_activacion",
+                               [f"oye {PALABRA_ACTIVACION}", f"hey {PALABRA_ACTIVACION}"] if PALABRA_ACTIVACION else [])
+UMBRAL_ACTIVACION = CFG.get("umbral_activacion", 0.87)   # más alto = menos falsos positivos
+# base reconoce nombres poco comunes mucho mejor que tiny ("Hades" -> «Hitties», «others») por 0,2 s más
+WHISPER_ACTIVACION = BASE / "modelos/whisper-base-int8-ov"
+VENTANA_ACTIVACION = 2.0      # segundos iniciales de cada frase en los que se busca la palabra
+FILTRO_ACTIVACION = 0.70      # similitud mínima para pasar al modelo principal
+FILTRO_SEGURO = 0.90          # si el filtro está así de seguro, basta una confirmación >= FILTRO_ACTIVACION
 
 SONIDOS = Path("/usr/share/sounds/ocean/stereo")
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
@@ -184,7 +201,8 @@ MSG = {
         "red": ", conectado a {r}",
         "perfiles": {"performance": "rendimiento", "balanced": "equilibrado", "quiet": "silencioso", "cool": "fresco",
                      "power-saver": "ahorro"},
-        "responde": "Responde en español, en máximo 3 frases cortas. El texto se leerá en voz alta: "
+        "responde": f"Te llamas {NOMBRE}, un asistente de voz local. Responde en español, en máximo 3 frases cortas."
+                    " El texto se leerá en voz alta: "
                     "sin markdown, sin listas, sin bloques de código.",
     },
     "en": {
@@ -244,7 +262,8 @@ MSG = {
         "red": ", connected to {r}",
         "perfiles": {"performance": "performance", "balanced": "balanced", "quiet": "quiet", "cool": "cool",
                      "power-saver": "power saver"},
-        "responde": "Answer in English, in at most 3 short sentences. The text will be read aloud: "
+        "responde": f"Your name is {NOMBRE}, a local voice assistant. Answer in English, in at most 3 short sentences."
+                    " The text will be read aloud: "
                     "no markdown, no lists, no code blocks.",
     },
 }
@@ -280,6 +299,38 @@ def clave(texto):
     return re.sub(r"[^a-z0-9]", "", normalizar(texto))
 
 
+def palabras_norm(texto):
+    return re.sub(r"[^a-z0-9 ]", " ", normalizar(texto)).split()
+
+
+def puntaje_activacion(texto):
+    """(similitud 0-1, nº de palabras que ocupa) de la palabra de activación al inicio del texto."""
+    p = palabras_norm(texto)
+    mejor = (0.0, 0)
+    for frase in [PALABRA_ACTIVACION] + VARIANTES_ACTIVACION:
+        objetivo = "".join(palabras_norm(frase))
+        for i in range(min(3, len(p))):       # tolera relleno antes: "eh, hey nova"
+            for k in range(1, len(palabras_norm(frase)) + 2):
+                r = difflib.SequenceMatcher(None, "".join(p[i:i + k]), objetivo).ratio()
+                if r > mejor[0]:
+                    mejor = (r, i + k)
+    return mejor
+
+
+def quitar_palabras(texto, n):
+    tokens = texto.split()
+    while tokens and n > 0:
+        n -= len(palabras_norm(tokens.pop(0)))
+    return " ".join(tokens).lstrip(" ,.!¡¿?")
+
+
+def recita_pista(texto, pista):
+    """Con audio casi en silencio, Whisper a veces "recita" la pista de vocabulario."""
+    t = " ".join(palabras_norm(texto))
+    terminos = {" ".join(palabras_norm(x)) for x in pista.split(",")}
+    return sum(1 for x in terminos if x and f" {x} " in f" {t} ") >= 3
+
+
 MARCAS_EN = {"open", "launch", "start", "run", "close", "the", "search", "for", "volume", "turn", "up", "down",
              "mute", "unmute", "what", "how", "is", "are", "running", "containers", "lock", "screen", "play",
              "pause", "next", "previous", "song", "music", "stop", "show", "status", "mode", "power", "project",
@@ -313,7 +364,7 @@ def sonido(nombre, esperar=False):
 
 def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6):
     global _notif_id
-    cmd = ["notify-send", "-p", "-a", "Asistente de voz", "-i", icono, "-t", str(segundos * 1000)]
+    cmd = ["notify-send", "-p", "-a", NOMBRE, "-i", icono, "-t", str(segundos * 1000)]
     if _notif_id:
         cmd += ["-r", _notif_id]
     r = subprocess.run(cmd + [titulo, cuerpo], capture_output=True, text=True)
@@ -492,33 +543,86 @@ def _restaurar_volumen(vol=None):
     VOLUMEN_GUARDADO.unlink(missing_ok=True)
 
 
-def grabar(detener, espera_inicio=ESPERA_INICIO):
-    """Graba del micrófono por defecto hasta detectar el fin de la frase."""
+def nivel(bloque):
+    return float(np.sqrt(np.mean(bloque.astype(np.float32) ** 2)))
+
+
+def pw_record():
+    """Bloques de 32 ms de un pw-record propio."""
+    p = subprocess.Popen(["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        while True:
+            data = p.stdout.read(BLOQUE * 2)
+            if len(data) < BLOQUE * 2:
+                return
+            yield np.frombuffer(data, np.int16)
+    finally:
+        p.terminate()
+        p.wait()
+
+
+class Microfono:
+    """Captura continua del micrófono (solo con palabra de activación), compartida entre el detector
+    de activación y la grabación del comando."""
+
+    def __init__(self):
+        self.cola = queue.Queue(maxsize=int(30 * RATE / BLOQUE))
+        threading.Thread(target=self._capturar, daemon=True).start()
+
+    def _capturar(self):
+        while True:                     # si PipeWire se reinicia o cambia el micrófono, se vuelve a abrir
+            for bloque in pw_record():
+                try:
+                    self.cola.put_nowait(bloque)
+                except queue.Full:
+                    pass
+            time.sleep(2)
+
+    def vaciar(self):
+        try:
+            while True:
+                self.cola.get_nowait()
+        except queue.Empty:
+            pass
+
+    def bloques(self):
+        while True:
+            try:
+                yield self.cola.get(timeout=2)
+            except queue.Empty:          # pw-record caído: termina la grabación en vez de colgarse
+                return
+
+
+def grabar(detener, espera_inicio=ESPERA_INICIO, fuente=None, previo=(), hablando=False, silencio=0.0,
+           umbral=None):
+    """Graba hasta detectar el fin de la frase. Por defecto abre su propio pw-record; con la palabra de
+    activación lee de `fuente` (Microfono) y, con `previo` y `hablando`, continúa una frase ya empezada."""
     vol_prev = _volumen_sistema()
     if vol_prev and vol_prev > 0.20:
         VOLUMEN_GUARDADO.write_text(str(vol_prev))
         subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "0.20"])
-    p = subprocess.Popen(["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    bloques, ruido = [], []
-    hablando, silencio, umbral = False, 0.0, 400.0
+    fuente = fuente or pw_record()
+    continua = hablando
+    bloques, ruido, n = list(previo), [], 0
+    calibrar = umbral is None and not continua
+    umbral = umbral or 400.0
     estado_vad = _VAD.nuevo_estado() if _VAD.session else None
     try:
-        while not detener.is_set():
-            data = p.stdout.read(BLOQUE * 2)
-            if not data:
+        for a in fuente:
+            if detener.is_set():
                 break
-            a = np.frombuffer(data, np.int16)
             bloques.append(a)
-            t = len(bloques) * BLOQUE / RATE
+            n += 1
+            t = n * BLOQUE / RATE
             if estado_vad is not None:
                 prob, estado_vad = _VAD.probabilidad(a, estado_vad)
-                if t < 0.15:                  # descarta el eco inmediato del sonido de inicio
+                if t < 0.15 and not continua:  # descarta el eco inmediato del sonido de inicio
                     continue
                 hay_voz = prob >= 0.5
             else:
-                rms = float(np.sqrt(np.mean(a.astype(np.float32) ** 2)))
-                if t < 0.3:                   # calibración del ruido de fondo (fallback sin ONNX)
+                rms = nivel(a)
+                if calibrar and t < 0.3:      # calibración del ruido de fondo (fallback sin ONNX)
                     ruido.append(rms)
                     umbral = max(400.0, 3 * float(np.percentile(ruido, 20)))
                     continue
@@ -534,8 +638,7 @@ def grabar(detener, espera_inicio=ESPERA_INICIO):
             if t > MAX_GRABACION:
                 break
     finally:
-        p.terminate()
-        p.wait()
+        fuente.close()
         if vol_prev and vol_prev > 0.20:
             _restaurar_volumen(vol_prev)
     if not hablando and not detener.is_set():
@@ -548,11 +651,11 @@ def grabar(detener, espera_inicio=ESPERA_INICIO):
     return audio.astype(np.float32) / 32768.0
 
 
-def guardar_grabacion(audio, conservar=10):
+def guardar_grabacion(audio, conservar=10, carpeta="grabaciones", sufijo=""):
     """Guarda las últimas grabaciones para poder diagnosticar errores de transcripción."""
-    d = BASE / "grabaciones"
-    d.mkdir(exist_ok=True)
-    with wave.open(str(d / time.strftime("%Y%m%d-%H%M%S.wav")), "wb") as w:
+    d = BASE / carpeta
+    d.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(d / time.strftime(f"%Y%m%d-%H%M%S{sufijo}.wav")), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(RATE)
@@ -979,7 +1082,7 @@ def pista_whisper():
     prefijos = [n.split(".")[0] for n in nombres if "." in n]
     nombres = [n.split(".", 1)[1] if "." in n and prefijos.count(n.split(".")[0]) >= 3 else n for n in nombres]
     nombres = [n.replace(".", " ") for n in nombres]
-    return ("VS Code, Visual Studio Code, Firefox, kitty, htop, btop, nvtop, KWrite, lazygit, lazydocker, "
+    return (f"{NOMBRE}, VS Code, Visual Studio Code, Firefox, kitty, htop, btop, nvtop, KWrite, lazygit, lazydocker, "
             "MongoDB Compass, Docker, " + ", ".join(n for n in nombres if n))
 
 
@@ -1868,7 +1971,18 @@ class WhisperOpenVINO:
         raise RuntimeError("Whisper (OpenVINO) no pudo cargarse en ningún dispositivo")
 
     def transcribir(self, audio, pista):
-        return self.pipe.generate(audio.tolist(), task="transcribe", initial_prompt=pista).texts[0].strip(), None
+        return generar_openvino(self.pipe, audio, initial_prompt=pista), None
+
+
+def generar_openvino(pipe, audio, **kw):
+    """Whisper de OpenVINO con detección automática de idioma. A veces falla al detectarlo
+    ("Language token id -1"); entonces se reintenta en español."""
+    try:
+        return pipe.generate(audio.tolist(), task="transcribe", **kw).texts[0].strip()
+    except RuntimeError as e:
+        if "Language token" not in str(e):
+            raise
+        return pipe.generate(audio.tolist(), task="transcribe", language="<|es|>", **kw).texts[0].strip()
 
 
 class WhisperCUDA:
@@ -1897,6 +2011,25 @@ class WhisperCUDA:
         return "".join(s.text for s in segmentos).strip(), lang
 
 
+class WhisperActivacion:
+    """Whisper pequeño en la CPU que busca la palabra de activación al inicio de cada frase."""
+    def __init__(self, motor):
+        self.pipe = self.modelo = None
+        if motor == "cuda":
+            from faster_whisper import WhisperModel
+            local = BASE / "modelos/faster-whisper-base"
+            self.modelo = WhisperModel(str(local) if local.is_dir() else "base", device="cpu", compute_type="int8")
+        else:
+            import openvino_genai
+            self.pipe = openvino_genai.WhisperPipeline(str(WHISPER_ACTIVACION), "CPU")
+
+    def transcribir(self, audio):
+        if self.pipe:
+            return generar_openvino(self.pipe, audio)
+        segmentos, _ = self.modelo.transcribe(audio, task="transcribe", beam_size=1, condition_on_previous_text=False)
+        return "".join(s.text for s in segmentos).strip()
+
+
 AFIRMATIVO = r"^\W*(si|sii|confirma\w*|dale|adelante|claro|ok|okay|yes|yep|yeah|confirm\w*|sure|go ahead)\b"
 NEGATIVO = r"^\W*(no|cancela\w*|olvida\w*|nada|cancel\w*|never\s*mind|stop)\b"
 
@@ -1906,18 +2039,26 @@ class Asistente:
     def __init__(self):
         t = time.time()
         validar_config()
-        self.whisper = WhisperCUDA() if motor_whisper() == "cuda" else WhisperOpenVINO()
+        motor = motor_whisper()
+        self.whisper = WhisperCUDA() if motor == "cuda" else WhisperOpenVINO()
         self.voz = Voz()
         self.activar = threading.Event()
         self.detener = threading.Event()
+        self.ocupado = threading.Lock()   # atajo y palabra de activación no atienden a la vez
         self.escuchando = False
         self.reescuchar = False  # el atajo interrumpió la voz: escuchar en cuanto termine atender()
         self.pendiente = None   # (accion, param, lang, expira) para confirmación en 1 paso
+        self.mic = None
+        if PALABRA_ACTIVACION:
+            self.whisper_activacion = WhisperActivacion(motor)
+            self.mic = Microfono()
         _restaurar_volumen()
         signal.signal(signal.SIGUSR1, self._senal)
+        activacion = ", ".join([PALABRA_ACTIVACION] + VARIANTES_ACTIVACION) if PALABRA_ACTIVACION else "solo atajo"
         log(f"listo en {time.time() - t:.1f}s (Whisper {self.whisper.descripcion}, "
             f"VAD: {'Silero' if _VAD.session else 'RMS'}, "
-            f"{len({a.id for a in APPS.values()})} apps, voces: {', '.join(self.voz.voces)})")
+            f"{len({a.id for a in APPS.values()})} apps, voces: {', '.join(self.voz.voces)}, "
+            f"nombre: {NOMBRE}, activación: {activacion})")
 
     def _senal(self, *_):
         if self.voz.hablando:
@@ -1934,17 +2075,55 @@ class Asistente:
         except Exception as e:
             log(f"no se pudo precargar {MODELO_COMANDOS}: {e}")
 
-    def _grabar_y_transcribir(self, espera_inicio=ESPERA_INICIO):
+    def _grabar_y_transcribir(self, espera_inicio=ESPERA_INICIO, vaciar=True):
+        """Con la palabra de activación graba del micrófono compartido. `vaciar` descarta lo que se oyó
+        antes (p. ej. la propia voz del asistente); tras "Oye Nova" no se vacía: puede que ya estés
+        diciendo el comando."""
+        if self.mic and vaciar:
+            self.mic.vaciar()
         self.escuchando = True
         self.detener.clear()
-        audio = grabar(self.detener, espera_inicio=espera_inicio)
+        audio = grabar(self.detener, espera_inicio=espera_inicio, fuente=self.mic.bloques() if self.mic else None)
         self.escuchando = False
         if audio is None:
             return None, None, 0.0
         t = time.time()
         guardar_grabacion(audio)
         texto, lang_stt = self.whisper.transcribir(audio, pista_whisper())
+        if PALABRA_ACTIVACION:                 # "Oye Nova, abre kitty" también vale tras el atajo
+            puntaje, n = puntaje_activacion(texto)
+            if puntaje >= UMBRAL_ACTIVACION:
+                texto = quitar_palabras(texto, n)
         return texto, lang_stt, time.time() - t
+
+    def _continuar_activacion(self, previo, umbral, silencio, filtro):
+        """Termina la frase que empezó con la posible palabra de activación y la confirma con el Whisper
+        principal. Devuelve (texto, idioma, segundos) del comando, o None si no era la palabra."""
+        self.escuchando = True
+        self.detener.clear()
+        audio = grabar(self.detener, fuente=self.mic.bloques(), previo=previo, hablando=True, silencio=silencio,
+                       umbral=umbral)
+        self.escuchando = False
+        if audio is None:
+            return None
+        t = time.time()
+        texto, lang_stt = self.whisper.transcribir(audio, pista_whisper())
+        puntaje, n = puntaje_activacion(texto)
+        ok = puntaje >= UMBRAL_ACTIVACION or (filtro >= FILTRO_SEGURO and puntaje >= FILTRO_ACTIVACION)
+        log(f"activación: «{texto}» filtro {filtro:.2f}, confirmación {puntaje:.2f} -> "
+            f"{'ACTIVA' if ok else 'rechazada'}")
+        guardar_grabacion(audio, conservar=20, carpeta="grabaciones/activacion",
+                          sufijo=f"-{'si' if ok else 'no'}-{filtro:.2f}-{puntaje:.2f}")
+        if not ok:
+            return None
+        guardar_grabacion(audio)
+        texto = quitar_palabras(texto, n)
+        if len(clave(texto)) >= 2:
+            return texto, lang_stt, time.time() - t
+        # Solo dijo "Oye Nova": aviso y escucha el comando
+        notificar("Escuchando… / Listening…", "", segundos=15)
+        sonido("button-pressed")
+        return self._grabar_y_transcribir(vaciar=False)
 
     def _ejecutar_y_responder(self, texto, accion, param, lang):
         if accion == "pregunta":
@@ -1982,14 +2161,32 @@ class Asistente:
         if respuesta:
             self.voz.decir(respuesta, lang)
 
-    def atender(self):
-        notificar("Escuchando… / Listening…", "", segundos=15)
-        sonido("button-pressed", esperar=True)
-        texto, lang_stt, t_stt = self._grabar_y_transcribir()
+    def atender(self, activacion=None):
+        """Atiende un comando. `activacion` = (previo, umbral, silencio, filtro) cuando viene de la
+        palabra de activación y la frase ya empezó."""
+        if not self.ocupado.acquire(blocking=False):
+            return
+        try:
+            self._atender(activacion)
+        finally:
+            self.escuchando = False
+            self.ocupado.release()
+
+    def _atender(self, activacion):
+        if activacion is None:
+            notificar("Escuchando… / Listening…", "", segundos=15)
+            sonido("button-pressed", esperar=True)
+            texto, lang_stt, t_stt = self._grabar_y_transcribir()
+        else:
+            r = self._continuar_activacion(*activacion)
+            if r is None:
+                return
+            texto, lang_stt, t_stt = r
         if texto is None:
             notificar("No escuché nada / Didn't hear anything", "", segundos=2)
             return
-        if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES):
+        if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES) or recita_pista(texto, pista_whisper()):
+            log(f"descartado (alucinación de Whisper): «{texto[:80]}»")
             notificar("No te entendí / Didn't catch that", "", segundos=2)
             return
 
@@ -2034,8 +2231,71 @@ class Asistente:
 
         self._ejecutar_y_responder(texto, accion, param, lang)
 
+    def escuchar_activacion(self):
+        """Hilo: busca la palabra de activación al inicio de cada frase que se escucha."""
+        previo = collections.deque(maxlen=10)          # 0,3 s antes de que empiece la voz
+        seg, silencio, piso, revisado = [], 0.0, 100.0, False
+        estado_vad = _VAD.nuevo_estado() if _VAD.session else None
+        vaciar = False
+        ventana = int(VENTANA_ACTIVACION * RATE / BLOQUE)
+        while True:
+            # Atendiendo un comando o hablando (p. ej. un temporizador): no toca el micrófono
+            if self.ocupado.locked() or self.voz.hablando:
+                time.sleep(0.05)
+                seg, silencio, revisado = [], 0.0, False
+                previo.clear()
+                vaciar = True
+                continue
+            if vaciar:                                 # descarta lo grabado mientras hablaba el asistente
+                self.mic.vaciar()
+                estado_vad = _VAD.nuevo_estado() if _VAD.session else None
+                vaciar = False
+            try:
+                a = self.mic.cola.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            rms = nivel(a)
+            umbral = max(400.0, 3 * piso)
+            if estado_vad is not None:                 # Silero no confunde música o ruido con voz
+                prob, estado_vad = _VAD.probabilidad(a, estado_vad)
+                hay_voz = prob >= 0.5
+            else:
+                hay_voz = rms > umbral
+            if hay_voz:
+                if not seg:
+                    seg = list(previo)
+                seg.append(a)
+                silencio = 0.0
+            elif seg:
+                seg.append(a)
+                silencio += BLOQUE / RATE
+            else:
+                previo.append(a)
+                piso = 0.95 * piso + 0.05 * rms
+                continue
+            dur = len(seg) * BLOQUE / RATE
+            fin = silencio >= 0.5
+            if not revisado and (fin or dur >= VENTANA_ACTIVACION):
+                revisado = True
+                if dur >= 0.4:
+                    audio = np.concatenate(seg[:ventana]).astype(np.float32) / 32768.0
+                    texto = self.whisper_activacion.transcribir(audio)
+                    filtro = puntaje_activacion(texto)[0]
+                    if filtro >= FILTRO_ACTIVACION:
+                        log(f"¿activación? «{texto.strip()}» ({filtro:.2f})")
+                        try:
+                            self.atender(activacion=(seg, umbral, silencio, filtro))
+                        except Exception as e:
+                            log(f"error: {e}")
+                        fin = True
+            if fin or dur > MAX_GRABACION:
+                seg, silencio, revisado = [], 0.0, False
+                previo.clear()
+
     def correr(self):
         threading.Thread(target=self.precargar_llm, daemon=True).start()
+        if self.mic:
+            threading.Thread(target=self.escuchar_activacion, daemon=True).start()
         while True:
             if self.activar.wait(timeout=1):
                 self.activar.clear()

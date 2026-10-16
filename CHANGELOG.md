@@ -5,8 +5,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 ## Sin publicar
 
 ### Añadido
+- **Palabra de activación** opcional (`palabra_activacion`, desactivada por defecto): «Oye Hades, abre kitty» de corrido o con pausa. Silero VAD + Whisper base en la CPU como filtro y confirmación con el Whisper principal. Funciona con OpenVINO y con faster-whisper.
+- **Nombre configurable** (`nombre`): aparece en notificaciones, respuestas y en la pista de vocabulario de Whisper.
 - Documentación: [arquitectura](docs/ARQUITECTURA.md), [cómo añadir acciones](docs/CONTRIBUIR.md) y este archivo.
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
+
+### Corregido
+- OpenVINO: reintento en español cuando falla la detección de idioma (`Language token id -1 not found`).
+- Con audio casi en silencio, Whisper «recitaba» la pista de vocabulario («VS Code, Visual Studio Code, Firefox») y se interpretaba como comando.
 
 ## 2026-10-16 — Nuevas acciones, Silero VAD y pruebas (`1893fbb`)
 

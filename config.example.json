@@ -1,4 +1,7 @@
 {
+  "nombre": "Nova",
+  "palabra_activacion": "",
+  "umbral_activacion": 0.87,
   "proyectos": "~/Proyectos",
   "compose": "~/Proyectos/docker-compose.yml",
   "terminal": "kitty",

@@ -82,8 +82,12 @@ if motor == "nvidia":
     from faster_whisper import download_model
     if not (dst / f"faster-whisper-{modelo}").exists():
         download_model(modelo, output_dir=str(dst / f"faster-whisper-{modelo}"))
-elif not (dst / "whisper-medium-int8-ov").exists():
-    snapshot_download("OpenVINO/whisper-medium-int8-ov", local_dir=dst / "whisper-medium-int8-ov")
+    if not (dst / "faster-whisper-base").exists():      # palabra de activación
+        download_model("base", output_dir=str(dst / "faster-whisper-base"))
+else:
+    for m in ["whisper-medium-int8-ov", "whisper-base-int8-ov"]:   # comandos / palabra de activación
+        if not (dst / m).exists():
+            snapshot_download("OpenVINO/" + m, local_dir=dst / m)
 for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medium/en_US-lessac-medium.onnx"]:
     for ext in ["", ".json"]:
         if not (dst / "voces" / (voz + ext)).exists():

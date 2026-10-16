@@ -28,7 +28,7 @@ Regla de diseño que se mantiene en todo: **solo acciones de una lista blanca**,
 - [x] 🟡 M — **Respuestas en streaming**: pedir a Ollama `stream: true` y sintetizar con Piper oración por oración (cortando en `. `, `? `, `! `, `\n`). La primera frase de una pregunta suena en ~0,5 s en vez de esperar toda la respuesta.
 - [x] 🟡 S — **Confirmación por voz de 1 paso para acciones sensibles**: guardar `self.pendiente = (accion, param, expira)` en `Asistente`; el asistente pregunta «¿Confirmas…?» y abre escucha 4 s para aceptar «sí / confirma / yes» o cancelar.
 - [ ] ⚪ M — **Conversación de seguimiento**: después de responder una pregunta, escuchar 5 s más sin atajo (opcional en `config.json`) y mandar a Ollama el turno anterior como contexto («¿y en Python?»).
-- [ ] ⚪ L — **Palabra de activación** opcional («Oye asistente») con [openWakeWord](https://github.com/dscripka/openWakeWord): local, Apache-2.0, permite entrenar una palabra propia. Coste: CPU y micrófono abierto todo el tiempo; dejarlo desactivado por defecto.
+- [x] ⚪ L — **Palabra de activación** opcional («Oye Nova»), desactivada por defecto: Silero VAD + Whisper base como filtro y confirmación con el Whisper principal. Alternativa a evaluar: [openWakeWord](https://github.com/dscripka/openWakeWord) (Apache-2.0, permite entrenar una palabra propia y gasta menos CPU).
 
 ## 3. Escritorio KDE (vía `busctl --user`, sin paquetes extra)
 
