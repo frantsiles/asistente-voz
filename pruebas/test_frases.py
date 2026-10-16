@@ -276,6 +276,25 @@ def probar_salvaguardas() -> tuple[int, int]:
     voz._activa = False
     verificar("El atajo durante la voz la corta y marca reescuchar", a.reescuchar and voz._cancelar_stream.is_set())
 
+    # 9b. El atajo nunca se pierde en silencio: mientras procesa, se encola y avisa
+    a.ocupado, a.encolado, a.reescuchar = threading.Lock(), False, False
+    avisos = []
+    a._avisar_ocupado = lambda: avisos.append(1)
+    a._senal()
+    verificar("El atajo en reposo activa la escucha", a.activar.is_set() and not a.encolado)
+    a.activar.clear()
+    with a.ocupado:
+        a._senal()
+        a._senal()
+    time.sleep(0.05)
+    verificar("El atajo mientras procesa se encola, no activa ni se pierde",
+              a.encolado and not a.activar.is_set(), f"encolado={a.encolado}")
+    verificar("El atajo mientras procesa avisa una sola vez", len(avisos) == 1, f"avisos={len(avisos)}")
+    a.encolado = False
+    with a.ocupado:
+        a.atender()
+    verificar("atender() con la palabra de activación ocupada encola la pulsación", a.encolado)
+
     # 10. No leer contraseñas del portapapeles en voz alta
     for texto, esperado in (("Xk9#mP2$vLq", True), ("ghp_1234567890abcdefXYZ", True), ("hola mundo", False),
                             ("https://github.com/frantsiles/asistente-voz/pull/12", False), ("Firefox", False)):

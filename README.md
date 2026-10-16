@@ -55,7 +55,9 @@ flowchart LR
 | "Actualiza todo" / "Actualiza el sistema" | "Update everything" | Abre la terminal con la actualización del sistema |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
-Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase: la voz se detecta con **Silero VAD**, que la distingue de la música, y mientras escucha baja el volumen del sistema al 20 %. Si pulsas el atajo otra vez mientras escucha, corta la grabación; si lo pulsas mientras habla, se calla y vuelve a escuchar. Las respuestas a preguntas se leen oración por oración mientras Ollama las genera.
+Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase: la voz se detecta con **Silero VAD**, que la distingue de la música, y mientras escucha baja el volumen del sistema al 20 %. Si pulsas el atajo otra vez mientras escucha, corta la grabación; si lo pulsas mientras habla, se calla y vuelve a escuchar; si lo pulsas mientras procesa, avisa y te escucha al terminar.
+
+Cada estado tiene su sonido (cámbialos en `SONIDO_ESTADO`): **escuchando** (pitido al empezar), **procesando** (clic al dejar de grabar), **éxito**, **fallo** (no entendió o falló la acción), **no escuché** (no detectó voz) y **ocupado**. Toda interacción termina con un sonido y una notificación. Las respuestas a preguntas se leen oración por oración mientras Ollama las genera.
 
 ## Palabra de activación
 

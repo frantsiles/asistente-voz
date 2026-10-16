@@ -5,12 +5,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 ## Sin publicar
 
 ### Añadido
+- **Un sonido por estado** (`SONIDO_ESTADO`): escuchando, procesando, éxito, fallo, no escuché y ocupado. Al dejar de grabar la notificación pasa a «Procesando…»; antes seguía diciendo «Escuchando…» durante la transcripción.
+- Con la palabra de activación, aviso visual en cuanto el filtro cree oír el nombre («¿Hades? Te escucho…»); suena solo cuando se confirma, para no sonar con cada falso candidato en una reunión. Si no era el nombre, la notificación se cierra.
+- **Ninguna interacción termina en silencio**: «no escuché», «no entendí» y la confirmación sin respuesta suenan, lo explican y quedan en el log.
+- El atajo pulsado mientras procesa ya no se pierde: avisa («Un momento…») y escucha en cuanto termina.
 - **Palabra de activación** opcional (`palabra_activacion`, desactivada por defecto): «Oye Hades, abre kitty» de corrido o con pausa. Silero VAD + Whisper base en la CPU como filtro y confirmación con el Whisper principal. Funciona con OpenVINO y con faster-whisper.
 - **Nombre configurable** (`nombre`): aparece en notificaciones, respuestas y en la pista de vocabulario de Whisper.
 - Documentación: [arquitectura](docs/ARQUITECTURA.md), [cómo añadir acciones](docs/CONTRIBUIR.md) y este archivo.
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
 
 ### Corregido
+- Pulsar el atajo mientras el servicio arrancaba lo mataba (`SIGUSR1` sin manejador durante la carga de los modelos). Ahora avisa «Arrancando…» y escucha en cuanto está listo.
+- `notify-send` sin timeout podía bloquear el asistente si el servidor de notificaciones no respondía.
 - OpenVINO: reintento en español cuando falla la detección de idioma (`Language token id -1 not found`).
 - Con audio casi en silencio, Whisper «recitaba» la pista de vocabulario («VS Code, Visual Studio Code, Firefox») y se interpretaba como comando.
 

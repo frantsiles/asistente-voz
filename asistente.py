@@ -32,8 +32,24 @@ import wave
 from pathlib import Path
 from typing import NamedTuple
 
-import numpy as np
-from piper import PiperVoice
+# Sin manejador, SIGUSR1 (el atajo) mata el proceso. Cargar los modelos tarda ~7 s, así que se registra
+# uno provisional antes de nada: la pulsación se recuerda y se atiende en cuanto el asistente está listo.
+_PULSACION_AL_ARRANCAR = threading.Event()
+
+
+def _senal_al_arrancar(*_):
+    if not _PULSACION_AL_ARRANCAR.is_set():
+        subprocess.Popen(["notify-send", "-a", "Asistente de voz", "-i", "audio-input-microphone", "-t", "4000",
+                          "-h", "boolean:transient:true", "Arrancando… / Starting…",
+                          "Te escucho en unos segundos / Listening in a few seconds"])
+    _PULSACION_AL_ARRANCAR.set()
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGUSR1, _senal_al_arrancar)
+
+import numpy as np  # noqa: E402  (después del manejador de la señal)
+from piper import PiperVoice  # noqa: E402
 
 # --- Configuración -----------------------------------------------------------
 HOME = Path.home()
@@ -353,22 +369,50 @@ def idioma(texto, detectado=None):
 # --- Interfaz: sonidos, notificaciones, voz --------------------------------------
 _notif_id = None
 
+# Un sonido distinto por estado, para saber sin mirar la pantalla en qué punto está el asistente
+SONIDO_ESTADO = {
+    "escuchando": "button-pressed",            # empieza a grabar: habla
+    "procesando": "button-pressed-modifier",   # te oyó y dejó de grabar: está pensando
+    "exito": "completion-success",
+    "fallo": "completion-fail",                # te oyó, pero no entendió o falló la acción
+    "no_escuche": "completion-partial",        # no oyó voz
+    "ocupado": "dialog-warning",               # atajo mientras procesa: te escucha al terminar
+}
+
 
 def sonido(nombre, esperar=False):
-    f = SONIDOS / f"{nombre}.oga"
+    f = SONIDOS / f"{SONIDO_ESTADO.get(nombre, nombre)}.oga"
     if f.exists():
         p = subprocess.Popen(["pw-play", str(f)], stderr=subprocess.DEVNULL)
         if esperar:      # el aviso de inicio no debe colarse en la grabación
             p.wait()
 
 
-def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6):
+def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6, transitoria=False):
+    """Una sola notificación que se va reemplazando. `transitoria`: estados intermedios
+    (escuchando, procesando) que no se quedan en el historial de notificaciones."""
     global _notif_id
     cmd = ["notify-send", "-p", "-a", NOMBRE, "-i", icono, "-t", str(segundos * 1000)]
+    if transitoria:
+        cmd += ["-h", "boolean:transient:true"]
     if _notif_id:
         cmd += ["-r", _notif_id]
-    r = subprocess.run(cmd + [titulo, cuerpo], capture_output=True, text=True)
-    _notif_id = r.stdout.strip() or None
+    try:
+        r = subprocess.run(cmd + [titulo, cuerpo], capture_output=True, text=True, timeout=3)
+        _notif_id = r.stdout.strip() or None
+    except subprocess.TimeoutExpired:      # el servidor de notificaciones no responde: no bloquear
+        log("notify-send no respondió")
+        _notif_id = None
+
+
+def cerrar_notificacion():
+    """Quita la notificación actual (p. ej. una activación que resultó no ser el nombre)."""
+    global _notif_id
+    if _notif_id:
+        subprocess.run(["busctl", "--user", "call", "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                        "org.freedesktop.Notifications", "CloseNotification", "u", _notif_id],
+                       capture_output=True, timeout=3)
+        _notif_id = None
 
 
 _voz_activa = None
@@ -969,7 +1013,7 @@ def programar_temporizador(param, lang, m):
 
     def avisar():
         msg = m["timer_fin"].format(x=nota)
-        sonido("completion-success", esperar=True)
+        sonido("exito", esperar=True)
         notificar("⏰", msg, "dialog-information", segundos=15)
         if _voz_activa and not _voz_activa.hablando:
             _voz_activa.decir(msg, lang)
@@ -2047,6 +2091,7 @@ class Asistente:
         self.ocupado = threading.Lock()   # atajo y palabra de activación no atienden a la vez
         self.escuchando = False
         self.reescuchar = False  # el atajo interrumpió la voz: escuchar en cuanto termine atender()
+        self.encolado = False    # el atajo llegó mientras procesaba: escuchar en cuanto quede libre
         self.pendiente = None   # (accion, param, lang, expira) para confirmación en 1 paso
         self.mic = None
         if PALABRA_ACTIVACION:
@@ -2054,6 +2099,9 @@ class Asistente:
             self.mic = Microfono()
         _restaurar_volumen()
         signal.signal(signal.SIGUSR1, self._senal)
+        if _PULSACION_AL_ARRANCAR.is_set():   # se pulsó el atajo mientras cargaban los modelos
+            log("atajo pulsado durante el arranque: escuchando")
+            self.activar.set()
         activacion = ", ".join([PALABRA_ACTIVACION] + VARIANTES_ACTIVACION) if PALABRA_ACTIVACION else "solo atajo"
         log(f"listo en {time.time() - t:.1f}s (Whisper {self.whisper.descripcion}, "
             f"VAD: {'Silero' if _VAD.session else 'RMS'}, "
@@ -2066,8 +2114,19 @@ class Asistente:
             self.reescuchar = True
         elif self.escuchando:
             self.detener.set()
+        elif self.ocupado.locked():
+            # Procesando (transcribiendo o pensando): la pulsación no se pierde, escucha al terminar
+            if not self.encolado:
+                self.encolado = True
+                log("atajo mientras procesa: escuchará al terminar")
+                threading.Thread(target=self._avisar_ocupado, daemon=True).start()
         else:
             self.activar.set()
+
+    def _avisar_ocupado(self):
+        sonido("ocupado")
+        notificar("Un momento… / One moment…", "Te escucho al terminar / I'll listen when done",
+                  segundos=4, transitoria=True)
 
     def precargar_llm(self):
         try:
@@ -2087,6 +2146,8 @@ class Asistente:
         self.escuchando = False
         if audio is None:
             return None, None, 0.0
+        sonido("procesando")
+        notificar("Procesando… / Processing…", "", segundos=15, transitoria=True)
         t = time.time()
         guardar_grabacion(audio)
         texto, lang_stt = self.whisper.transcribir(audio, pista_whisper())
@@ -2098,14 +2159,19 @@ class Asistente:
 
     def _continuar_activacion(self, previo, umbral, silencio, filtro):
         """Termina la frase que empezó con la posible palabra de activación y la confirma con el Whisper
-        principal. Devuelve (texto, idioma, segundos) del comando, o None si no era la palabra."""
+        principal. Devuelve (texto, idioma, segundos) del comando, o None si no era la palabra.
+        Mientras no está confirmado solo hay avisos visuales y discretos: en una reunión, cada falso
+        candidato sonaría."""
+        notificar(f"¿{NOMBRE}? Te escucho… / Listening…", "", segundos=15, transitoria=True)
         self.escuchando = True
         self.detener.clear()
         audio = grabar(self.detener, fuente=self.mic.bloques(), previo=previo, hablando=True, silencio=silencio,
                        umbral=umbral)
         self.escuchando = False
         if audio is None:
+            cerrar_notificacion()
             return None
+        notificar(f"¿{NOMBRE}? Procesando… / Processing…", "", segundos=15, transitoria=True)
         t = time.time()
         texto, lang_stt = self.whisper.transcribir(audio, pista_whisper())
         puntaje, n = puntaje_activacion(texto)
@@ -2115,14 +2181,16 @@ class Asistente:
         guardar_grabacion(audio, conservar=20, carpeta="grabaciones/activacion",
                           sufijo=f"-{'si' if ok else 'no'}-{filtro:.2f}-{puntaje:.2f}")
         if not ok:
+            cerrar_notificacion()
             return None
         guardar_grabacion(audio)
         texto = quitar_palabras(texto, n)
         if len(clave(texto)) >= 2:
+            sonido("procesando")               # confirmado: ahora sí suena «te oí»
             return texto, lang_stt, time.time() - t
         # Solo dijo "Oye Nova": aviso y escucha el comando
-        notificar("Escuchando… / Listening…", "", segundos=15)
-        sonido("button-pressed")
+        notificar("Escuchando… / Listening…", "", segundos=15, transitoria=True)
+        sonido("escuchando")
         return self._grabar_y_transcribir(vaciar=False)
 
     def _ejecutar_y_responder(self, texto, accion, param, lang):
@@ -2136,7 +2204,7 @@ class Asistente:
                 def avance(parcial):
                     if primera:            # el sonido de éxito, solo cuando ya hay respuesta
                         primera.clear()
-                        sonido("completion-success")
+                        sonido("exito")
                     notificar(f"«{texto}»", parcial, "dialog-information", segundos=15)
 
                 respuesta = self.voz.decir_stream(oraciones, lang, al_avanzar=avance)
@@ -2144,7 +2212,7 @@ class Asistente:
                     notificar(f"«{texto}»", m["no_entendi"], "dialog-warning", segundos=5)
             except Exception as e:
                 log(f"error en pregunta en streaming: {e}")
-                sonido("completion-fail")
+                sonido("fallo")
                 notificar(f"«{texto}»", m["ollama_error"], "dialog-warning", segundos=5)
                 self.voz.decir(m["ollama_error"], lang)
             return
@@ -2156,7 +2224,7 @@ class Asistente:
             log(f"error ejecutando {accion}: {e}")
             respuesta, ok = MSG[lang]["fallo"], False
 
-        sonido("completion-success" if ok else "completion-fail")
+        sonido("exito" if ok else "fallo")
         notificar(f"«{texto}»", respuesta or "✓", "dialog-information" if ok else "dialog-warning", segundos=5)
         if respuesta:
             self.voz.decir(respuesta, lang)
@@ -2165,6 +2233,8 @@ class Asistente:
         """Atiende un comando. `activacion` = (previo, umbral, silencio, filtro) cuando viene de la
         palabra de activación y la frase ya empezó."""
         if not self.ocupado.acquire(blocking=False):
+            if activacion is None:             # atajo con la palabra de activación procesando
+                self.encolado = True
             return
         try:
             self._atender(activacion)
@@ -2174,20 +2244,26 @@ class Asistente:
 
     def _atender(self, activacion):
         if activacion is None:
-            notificar("Escuchando… / Listening…", "", segundos=15)
-            sonido("button-pressed", esperar=True)
+            notificar("Escuchando… / Listening…", "", segundos=15, transitoria=True)
+            sonido("escuchando", esperar=True)
             texto, lang_stt, t_stt = self._grabar_y_transcribir()
         else:
             r = self._continuar_activacion(*activacion)
             if r is None:
                 return
             texto, lang_stt, t_stt = r
+        # Toda interacción termina con un sonido y una notificación, y queda en el log
         if texto is None:
-            notificar("No escuché nada / Didn't hear anything", "", segundos=2)
+            log("no escuché nada (no se detectó voz)")
+            sonido("no_escuche")
+            notificar("No escuché nada / Didn't hear anything", "Habla justo después del pitido / Speak after the beep",
+                      "dialog-warning", segundos=4)
             return
         if len(texto) < 2 or any(a in normalizar(texto) for a in ALUCINACIONES) or recita_pista(texto, pista_whisper()):
             log(f"descartado (alucinación de Whisper): «{texto[:80]}»")
-            notificar("No te entendí / Didn't catch that", "", segundos=2)
+            sonido("fallo")
+            notificar("No te entendí / Didn't catch that", "Inténtalo de nuevo / Please try again",
+                      "dialog-warning", segundos=4)
             return
 
         n = normalizar(texto)
@@ -2217,7 +2293,7 @@ class Asistente:
             self.pendiente = (accion, param, lang, time.time() + 15.0)
             notificar(f"«{texto}»", pregunta_conf, "dialog-question", segundos=8)
             self.voz.decir(pregunta_conf, lang)
-            sonido("button-pressed", esperar=True)
+            sonido("escuchando", esperar=True)
             resp, _, _ = self._grabar_y_transcribir(espera_inicio=4.0)
             if resp and re.search(AFIRMATIVO, normalizar(resp)):
                 self.pendiente = None
@@ -2227,6 +2303,11 @@ class Asistente:
                 msg = MSG[lang]["cancelado"]
                 notificar(f"«{resp}»", msg, "dialog-information", segundos=4)
                 self.voz.decir(msg, lang)
+            else:                              # sigue pendiente 15 s: se puede responder con el atajo
+                log(f"confirmación de {accion} sin respuesta")
+                sonido("no_escuche")
+                notificar(pregunta_conf, "Pulsa el atajo y di «sí» / Press the shortcut and say «yes»",
+                          "dialog-question", segundos=12)
             return
 
         self._ejecutar_y_responder(texto, accion, param, lang)
@@ -2297,16 +2378,20 @@ class Asistente:
         if self.mic:
             threading.Thread(target=self.escuchar_activacion, daemon=True).start()
         while True:
-            if self.activar.wait(timeout=1):
+            # Pulsación pendiente (llegó mientras procesaba): en cuanto se libera, a escuchar
+            if self.encolado and not self.ocupado.locked():
+                self.encolado = False
+                self.activar.set()
+            if self.activar.wait(timeout=0.2):
                 self.activar.clear()
                 try:
                     self.atender()
                 except Exception as e:
                     log(f"error: {e}")
+                    sonido("fallo")
                     notificar("Error del asistente", str(e), "dialog-error")
-                # Pulsaciones durante el proceso se ignoran, salvo la que interrumpió la voz
                 self.activar.clear()
-                if self.reescuchar:
+                if self.reescuchar:            # el atajo interrumpió la voz
                     self.reescuchar = False
                     self.activar.set()
 
