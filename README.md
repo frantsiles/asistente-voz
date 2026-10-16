@@ -21,6 +21,7 @@ flowchart LR
 - **Abre cualquier aplicación instalada**: lee los `.desktop` igual que el menú de KDE, incluidas las apps de Flatpak. Las herramientas de consola (`htop`, `lazygit`, `lazydocker`, `k9s`…) se abren dentro de tu terminal.
 - **Rápido**: los comandos comunes se resuelven con reglas, sin pasar por el modelo de lenguaje. Solo las frases ambiguas usan el LLM.
 - **Seguro**: solo puede ejecutar acciones de una lista blanca, nunca comandos arbitrarios. Además, una acción del LLM solo se acepta si la frase contiene palabras que la respalden. Si el modelo "adivina" `bloquear_pantalla` ante una frase sin sentido, se descarta.
+- **Actualizaciones sin manejar tu contraseña**: "actualiza todo" abre la terminal con el comando de actualización; `sudo` te pide la contraseña ahí. `yay`/`paru` se ejecutan sin `sudo`, como deben.
 - **Ligero en espera**: ~550 MB de RAM y 0 % de CPU mientras no lo usas.
 
 ## Comandos
@@ -38,6 +39,7 @@ flowchart LR
 | "Modo rendimiento" | "Switch to performance mode" | Perfil de energía (power-profiles) |
 | "Busca en internet el clima en San José" | "Search the web for Python tutorials" | Búsqueda en Firefox |
 | "Bloquea la pantalla" | "Lock the screen" | Bloquea la sesión |
+| "Actualiza todo" / "Actualiza el sistema" | "Update everything" | Abre la terminal con la actualización del sistema |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
 Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase. Si pulsas el atajo otra vez mientras escucha, corta la grabación.
@@ -101,6 +103,7 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `idiomas` | `["es", "en"]` | Idiomas que puede detectar Whisper (solo NVIDIA). Evita que el ruido se transcriba como árabe u otros idiomas |
 | `whisper_modelo` | `large-v3-turbo` | Modelo de faster-whisper (solo NVIDIA), p. ej. `medium` |
 | `whisper_precision` | `int8_float16` | Precisión en la GPU NVIDIA. `float16` ocupa el doble de VRAM |
+| `comando_actualizar` | se detecta | Comando de "actualiza todo", p. ej. `"yay -Syu; flatpak update"`. Sin definir: `yay`/`paru`/`pacman` en Arch o `dnf` en Fedora, más `flatpak update` |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
 
 Después de cambiar algo:

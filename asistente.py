@@ -72,6 +72,8 @@ COMPOSE = Path(CFG["compose"]).expanduser() if CFG.get("compose") else None  # d
 
 # Terminal para las herramientas de consola y herramientas que se abren dentro de ella
 TERMINAL = CFG.get("terminal", "kitty")
+# Comando para "actualiza todo". Por defecto se detecta: yay/paru/pacman (Arch) o dnf (Fedora), + flatpak
+COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
 APPS_TERMINAL = CFG.get("apps_terminal", ["htop", "btop", "top", "nvtop", "lazygit", "lazydocker", "k9s",
                                           "ranger", "yazi", "ncdu"])
 
@@ -125,6 +127,8 @@ MSG = {
         "media_no": "No entendí qué hacer con la música.", "media_0": "No hay ningún reproductor abierto.",
         "perfil_no": "Los perfiles son rendimiento, equilibrado o ahorro.",
         "perfil": "Perfil {x} activado durante una hora.", "buscando": "Buscando {x}.",
+        "actualizando": "Abriendo la terminal para actualizar. Escribe tu contraseña si te la pide.",
+        "actualizar_no": "No sé cómo actualizar este sistema.", "actualizar_fin": "Listo. Pulsa Enter para cerrar.",
         "ollama_error": "No pude conectar con Ollama.", "no_entendi": "No te entendí.",
         "fallo": "Algo falló al ejecutar el comando.", "pensando": "Pensando…",
         "estado": "El procesador está a {t} grados{gpu}, usas {u:.0f} de {m:.0f} gigas de memoria, "
@@ -147,6 +151,8 @@ MSG = {
         "media_no": "I didn't understand what to do with the music.", "media_0": "No media player is open.",
         "perfil_no": "The profiles are performance, balanced or power saver.",
         "perfil": "{x} profile enabled for one hour.", "buscando": "Searching for {x}.",
+        "actualizando": "Opening a terminal to update. Type your password if asked.",
+        "actualizar_no": "I don't know how to update this system.", "actualizar_fin": "Done. Press Enter to close.",
         "ollama_error": "I couldn't connect to Ollama.", "no_entendi": "Sorry, I didn't understand.",
         "fallo": "Something went wrong running the command.", "pensando": "Thinking…",
         "estado": "The CPU is at {t} degrees{gpu}, you're using {u:.0f} of {m:.0f} gigabytes of memory, "
@@ -344,7 +350,7 @@ def resolver_app(nombre):
 # --- Interpretación ----------------------------------------------------------------
 ACCIONES = ["abrir_app", "abrir_proyecto", "docker_estado", "docker_levantar", "docker_detener",
             "volumen", "multimedia", "estado_sistema", "perfil_energia", "buscar_web",
-            "bloquear_pantalla", "pregunta", "no_entendido"]
+            "bloquear_pantalla", "actualizar_sistema", "pregunta", "no_entendido"]
 
 PROMPT_COMANDOS = """Eres el intérprete de comandos de voz de un PC de desarrollo. La frase puede estar en español o en inglés.
 Convierte la frase en UNA acción. Los valores fijos de parametro van SIEMPRE en español, tal como aparecen aquí.
@@ -360,6 +366,7 @@ Acciones y su parámetro:
 - perfil_energia: parametro = rendimiento | equilibrado | ahorro
 - buscar_web: buscar en internet (search the web). parametro = lo que hay que buscar, en el idioma original
 - bloquear_pantalla: parametro = ""
+- actualizar_sistema: actualizar el sistema, los paquetes o todo (update/upgrade the system). parametro = ""
 - pregunta: una pregunta clara de conocimiento general o de programación. parametro = la pregunta completa
 - no_entendido: muletillas, frases incompletas o sin sentido. parametro = ""
 Responde solo el JSON."""
@@ -378,6 +385,8 @@ REGLAS = [  # (regex sobre texto normalizado, acción, parámetro; None = la fra
     (r"\b(siguiente cancion|siguiente tema|la siguiente|next song|next track)\b", "multimedia", "siguiente"),
     (r"\b(cancion anterior|tema anterior|la anterior|previous song|previous track)\b", "multimedia", "anterior"),
     (r"\bbloquea\w* (la )?(pantalla|sesion|compu|pc)|\block (the )?(screen|computer|pc|session)", "bloquear_pantalla", ""),
+    (r"^(?!\W*(como|how|que|what|por que|why|cual)\b).*\b(actualiza\w*|update|upgrade)\b.*\b(todo|sistema|paquetes|equipo|compu|pc|everything|system|packages|computer)\b",
+     "actualizar_sistema", ""),
     # Preguntas directas, salvo que pida buscar en internet
     (r"^(?!.*\b(busca|internet|google|search)\b)\W*(que es|que son|que significa|como (funciona|se|hago|puedo)|"
      r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can)|"
@@ -397,6 +406,7 @@ EVIDENCIA = {  # la acción del modelo solo se acepta si la frase normalizada cu
     "perfil_energia": r"rendimiento|performance|equilibrad|balanced|ahorro|saver|perfil|profile|energia|power|modo|mode",
     "buscar_web": r"busca|search|internet|google|web|look up",
     "bloquear_pantalla": r"bloque|lock",
+    "actualizar_sistema": r"actualiz|update|upgrade",
 }
 
 # Errores recurrentes de Whisper con esta voz/micrófono: "Abre" se transcribe como "Ahora", "A ver", "Aurek"…
@@ -481,6 +491,9 @@ def interpretar(texto):
         accion = "no_entendido"
     if accion == "buscar_web":
         param = extraer_busqueda(texto) or param
+    # "¿Cómo actualizo un paquete de npm?" es una pregunta, no una orden de actualizar el sistema
+    if accion == "actualizar_sistema" and re.match(r"^\W*(como|how|que|what|por que|why|cual)\b", n):
+        accion, param = "pregunta", texto
     if accion == "abrir_proyecto" and resolver_app(param):
         accion = "abrir_app"
     return accion, param
@@ -578,6 +591,20 @@ def estado_sistema(m):
                               p=m["perfiles"].get(perfil, perfil))
 
 
+def comando_actualizar():
+    if COMANDO_ACTUALIZAR:
+        return COMANDO_ACTUALIZAR
+    pasos = []
+    # yay y paru piden sudo por su cuenta; no deben ejecutarse como root
+    for cmd in ("yay -Syu", "paru -Syu", "sudo pacman -Syu", "sudo dnf upgrade --refresh"):
+        if shutil.which(cmd.removeprefix("sudo ").split()[0]):
+            pasos.append(cmd)
+            break
+    if shutil.which("flatpak"):
+        pasos.append("flatpak update")
+    return "; ".join(pasos) or None
+
+
 def ejecutar(accion, param, lang):
     """Devuelve el texto de respuesta en el idioma indicado."""
     m = MSG[lang]
@@ -658,6 +685,14 @@ def ejecutar(accion, param, lang):
     if accion == "bloquear_pantalla":
         subprocess.run(["loginctl", "lock-sessions"])
         return ""
+
+    if accion == "actualizar_sistema":
+        # En una terminal: sudo necesita tu contraseña y así ves el progreso. El asistente nunca la maneja.
+        cmd = comando_actualizar()
+        if not cmd:
+            return m["actualizar_no"]
+        lanzar([TERMINAL, "bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'])
+        return m["actualizando"]
 
     if accion == "pregunta":
         notificar(m["pensando"], param, "dialog-question")
