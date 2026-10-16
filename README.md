@@ -181,12 +181,21 @@ wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
 - Todo se procesa localmente. La única conexión de red es la descarga inicial de los modelos desde Hugging Face.
 - `grabaciones/` guarda tus últimos 10 comandos de voz solo en tu equipo, para depuración, y está en `.gitignore`.
 
+## Documentación
+
+- [Arquitectura](docs/ARQUITECTURA.md): el flujo completo, los motores de Whisper, cómo se interpreta una frase y las capas de seguridad.
+- [Cómo añadir acciones](docs/CONTRIBUIR.md): paso a paso, con pruebas.
+- [Cambios](CHANGELOG.md) y [próximos pasos](TODO.md).
+
 ## Estructura
 
 ```
 asistente.py            # el asistente (configuración, reglas, acciones)
 config.example.json     # plantilla de configuración
 TODO.md                 # ideas y próximos ajustes
+CHANGELOG.md            # cambios por fecha
+docs/ARQUITECTURA.md    # cómo funciona por dentro
+docs/CONTRIBUIR.md      # cómo añadir acciones y probarlas
 pruebas/                # frases de prueba y salvaguardas (python pruebas/test_frases.py)
 instalar.sh             # instalación para el usuario actual
 requirements*.txt       # comunes + -intel (OpenVINO) / -nvidia (faster-whisper)
