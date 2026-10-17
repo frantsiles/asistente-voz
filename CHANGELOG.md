@@ -33,6 +33,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
 
 ### Corregido
+- Sin `notify-send` (libnotify) o sin `pw-play`, el asistente fallaba en la primera notificación o sonido: ahora sigue funcionando sin ellos.
 - «¿Cómo escribo una función…?» se interpretaba como «explica lo que copié»: más verbos en primera persona y «how to» cuentan como pregunta.
 - «Cierra y» (frase cortada) cerraba la ventana actual.
 - «Escritorio dos» no se entendía: solo «escritorio 2».

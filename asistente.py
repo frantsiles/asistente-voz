@@ -437,7 +437,7 @@ SONIDO_ESTADO = {
 
 def sonido(nombre, esperar=False):
     f = SONIDOS / f"{SONIDO_ESTADO.get(nombre, nombre)}.oga"
-    if f.exists():
+    if f.exists() and shutil.which("pw-play"):
         p = subprocess.Popen(["pw-play", str(f)], stderr=subprocess.DEVNULL)
         if esperar:      # el aviso de inicio no debe colarse en la grabación
             p.wait()
@@ -457,6 +457,8 @@ def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6, tra
         _notif_id = r.stdout.strip() or None
     except subprocess.TimeoutExpired:      # el servidor de notificaciones no responde: no bloquear
         log("notify-send no respondió")
+        _notif_id = None
+    except OSError:                        # sin notify-send (libnotify): el asistente sigue, solo con voz
         _notif_id = None
 
 
