@@ -392,6 +392,77 @@ def probar_salvaguardas() -> tuple[int, int]:
                             ("https://github.com/frantsiles/asistente-voz/pull/12", False), ("Firefox", False)):
         verificar(f"parece_secreto({texto!r}) = {esperado}", asistente.parece_secreto(texto) == esperado)
 
+    # 11. Redactar e imágenes
+    m_es = asistente.MSG["es"]
+    acc, _ = asistente.interpretar("Crea una imagen de docker para el backend")
+    verificar("«Crea una imagen de docker» no genera una imagen", acc != "imagen", acc)
+    acc, prm = asistente.validar_interpretacion("imagen", "un gato", "si, eso lo vemos manana", "Sí, eso lo vemos mañana")
+    verificar("imagen sin evidencia en la frase se descarta", acc == "no_entendido", f"({acc!r}, {prm!r})")
+
+    orig = (asistente.llm, asistente.klipper_escribir, asistente.notificar, asistente.subprocess.run,
+            asistente.generar_imagen, asistente.liberar_vram_llm, asistente.lanzar, asistente.sonido,
+            asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes)
+    try:
+        portapapeles = []
+        asistente.notificar = lambda *_a, **_kw: None
+        asistente.klipper_escribir = portapapeles.append
+        asistente.llm = lambda *_a, **_kw: "Aquí tienes:\n```python\nprint(sorted(xs))\n```"
+        r = asistente._ej_redactar("escribe una función que ordene", "es", m_es)
+        verificar("redactar deja solo el código en el portapapeles, sin el bloque de markdown",
+                  portapapeles == ["print(sorted(xs))"] and r == m_es["redactar_ok"], f"{portapapeles!r} {r!r}")
+
+        asistente.FOOOCUS = None
+        verificar("imagen sin Fooocus avisa", asistente._ej_imagen("dibuja un gato", "es", m_es) == m_es["imagen_no"])
+
+        # La petición va a Fooocus por stdin, nunca en la línea de comandos
+        asistente.FOOOCUS = asistente.Path("/opt/fooocus")
+        llamada = {}
+
+        class _Proc:
+            stdout = 'Loading model\n{"ok": true, "ruta": "/x/img.png"}\n'
+            stderr = ""
+
+        def run_falso(cmd, **kw):
+            llamada.update(cmd=cmd, input=kw.get("input"))
+            return _Proc()
+        asistente.subprocess.run = run_falso
+        ruta = asistente.generar_imagen("a cat; rm -rf ~", asistente.Path("/x/img.png"))
+        verificar("generar_imagen manda el prompt por stdin y lee la última línea",
+                  ruta == "/x/img.png" and "rm -rf" not in " ".join(llamada["cmd"])
+                  and json.loads(llamada["input"])["prompt"] == "a cat; rm -rf ~", f"{ruta!r} {llamada!r}")
+        asistente.subprocess.run = orig[3]
+
+        asistente.LLM = "ninguno"
+        p = asistente.prompt_imagen("Genera una imagen de un zorro en la nieve")
+        verificar("prompt_imagen sin LLM usa la descripción", p == "un zorro en la nieve", p)
+        asistente.LLM = orig[9]
+
+        # Una sola imagen a la vez; el asistente responde enseguida y genera en segundo plano
+        import threading
+        import tempfile
+        soltar, prompts = threading.Event(), []
+        with tempfile.TemporaryDirectory() as tmp:
+            (asistente.Path(tmp) / "venv/bin").mkdir(parents=True)
+            (asistente.Path(tmp) / "venv/bin/python").touch()
+            asistente.FOOOCUS = asistente.Path(tmp)
+            asistente.carpeta_imagenes = lambda: asistente.Path(tmp) / "imagenes"
+            asistente.llm = lambda *_a, **_kw: "a red fox sleeping in the snow"
+            asistente.liberar_vram_llm = lambda: None
+            asistente.lanzar = asistente.sonido = lambda *_a, **_kw: None
+            asistente.generar_imagen = lambda prompt, salida: (prompts.append(prompt), soltar.wait(5), None)[2]
+            r1 = asistente._ej_imagen("Genera un zorro", "es", m_es)
+            r2 = asistente._ej_imagen("Genera otro", "es", m_es)
+            soltar.set()
+            asistente._imagen_en_curso.acquire(timeout=5)
+            asistente._imagen_en_curso.release()
+        verificar("imagen responde al instante y no lanza dos a la vez",
+                  r1 == m_es["imagen_generando"] and r2 == m_es["imagen_ocupado"]
+                  and prompts == ["a red fox sleeping in the snow"], f"{r1!r} {r2!r} {prompts!r}")
+    finally:
+        (asistente.llm, asistente.klipper_escribir, asistente.notificar, asistente.subprocess.run,
+         asistente.generar_imagen, asistente.liberar_vram_llm, asistente.lanzar, asistente.sonido,
+         asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes) = orig
+
     return ok, fallos
 
 

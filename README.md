@@ -48,6 +48,8 @@ flowchart LR
 | "Avísame en cinco minutos que saque la ropa" | "Set a timer for 10 minutes" | Temporizador con notificación y voz |
 | "Lee / resume / traduce lo que copié" | "Summarize the clipboard" | Portapapeles de Klipper + LLM (no lee contraseñas en voz alta) |
 | "Escribe hola mundo" | "Type hello world" | Copia el texto dictado al portapapeles para pegarlo con Ctrl+V |
+| "Redacta un correo para mi jefe pidiendo el viernes libre" / "Escríbeme una función en Python que…" | "Write an email to the team about…" | El LLM lo escribe y lo deja en el portapapeles (Ctrl+V) |
+| "Genera una imagen de un zorro en la nieve" / "Dibújame un gato astronauta" | "Draw a robot playing guitar" | Imagen con [Fooocus](#imágenes-con-fooocus) (~1–1,5 min, en segundo plano); se abre al terminar |
 | "¿Dónde está mi teléfono?" / "Batería del teléfono" | "Ring my phone" | KDE Connect |
 | "¿Cómo está la compu?" / "Estado de la batería" | "How is the computer doing?" | Temperatura de CPU y GPU, RAM, disco, batería, red y perfil de energía |
 | "¿Qué proceso usa más CPU?" / "¿Qué corre en el puerto 5000?" / "¿Hay actualizaciones?" | "Open ports" | Diagnóstico rápido del sistema |
@@ -143,6 +145,9 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `umbral_clasificador` | `0.86` | Similitud mínima para que decida el clasificador; por debajo pregunta al LLM |
 | `modelo_comandos` | `llama3.2` | Modelo que interpreta los comandos dudosos. Recomendado: `gemma4:e2b` |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
+| `modelo_redactar` | el de preguntas | Modelo que redacta textos y código, p. ej. `qwen2.5-coder:7b` si sobre todo pides código |
+| `fooocus` | `~/Fooocus` | Carpeta de Fooocus (con su `venv`) para generar imágenes. `null` = desactivado |
+| `carpeta_imagenes` | tu carpeta de imágenes + `/<nombre>` | Dónde se guardan las imágenes generadas |
 | `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
 | `idiomas` | `["es", "en"]` | Idiomas que puede detectar Whisper (solo NVIDIA). Evita que el ruido se transcriba como árabe u otros idiomas |
 | `whisper_modelo` | `large-v3-turbo` | Modelo de faster-whisper (solo NVIDIA), p. ej. `medium` |
@@ -209,6 +214,18 @@ systemctl --user restart asistente-voz
 | Comandos interpretados por llama3.2 (GPU) | ~1,5–2,5 s | ~0,4–0,75 s |
 | Preguntas | ~5–8 s | ~2 s |
 | Voz (Piper) | ~0,3 s | |
+| Redactar un correo o una función (llama3.2) | | ~1–2 s |
+| Imagen 1024×1024 (Fooocus, SDXL, 30 pasos) | | ~60–90 s |
+
+## Imágenes con Fooocus
+
+«Genera una imagen de…» usa el motor de [Fooocus](https://github.com/lllyasviel/Fooocus) sin abrir su interfaz web. Necesitas Fooocus instalado en `~/Fooocus` (o en la carpeta de `fooocus`) con su entorno `venv` y su modelo por defecto descargado: basta con haberlo abierto una vez. El asistente no instala torch en su propio entorno: `herramientas/imagen_fooocus.py` se ejecuta con el Python de Fooocus.
+
+1. El LLM convierte la petición en un prompt en inglés (SDXL entiende poco español). Sin LLM se usa la descripción tal cual.
+2. Se descargan de la GPU los modelos de Ollama: SDXL necesita casi toda la VRAM de una gráfica de 6 GB. Whisper se queda cargado.
+3. Fooocus genera la imagen en segundo plano; mientras, el asistente sigue atendiendo. Al terminar avisa, abre la imagen y vuelve a cargar el modelo de comandos.
+
+Solo genera una imagen a la vez. Con una GPU Intel o sin GPU, Fooocus funciona pero tarda muchos minutos.
 
 ## Solución de problemas
 
@@ -266,6 +283,7 @@ wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
 
 ```
 asistente.py            # el asistente (configuración, reglas, acciones)
+herramientas/           # imagen_fooocus.py: genera imágenes con el Python de Fooocus
 config.example.json     # plantilla de configuración
 TODO.md                 # ideas y próximos ajustes
 CHANGELOG.md            # cambios por fecha

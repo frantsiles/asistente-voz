@@ -70,7 +70,7 @@ CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
               "whisper_precision", "comando_actualizar", "hablar", "nombre", "palabra_activacion",
               "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env", "clasificador",
-              "umbral_clasificador"}
+              "umbral_clasificador", "modelo_redactar", "fooocus", "carpeta_imagenes"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
 WHISPER_MOTOR = CFG.get("whisper", "auto")
@@ -103,6 +103,8 @@ USAR_CLASIFICADOR = CFG.get("clasificador", True)
 UMBRAL_CLASIFICADOR = CFG.get("umbral_clasificador", 0.86)   # más alto = duda más y pregunta más al LLM
 MODELO_COMANDOS = CFG.get("modelo_comandos", "llama3.2")
 MODELO_PREGUNTAS = CFG.get("modelo_preguntas", "llama3.2")  # uno más grande responde mejor, pero carga más lento
+# Redactar textos o código para el portapapeles. Para código rinde mejor uno de código (qwen2.5-coder)
+MODELO_REDACTAR = CFG.get("modelo_redactar") or MODELO_PREGUNTAS
 NUM_CTX = 4096                 # igual para ambos usos, así Ollama no recarga el modelo
 KEEP_ALIVE = "60m"
 
@@ -111,6 +113,9 @@ COMPOSE = Path(CFG["compose"]).expanduser() if CFG.get("compose") else None  # d
 
 # Terminal para las herramientas de consola y herramientas que se abren dentro de ella
 TERMINAL = CFG.get("terminal", "kitty")
+# Imágenes con el motor de Fooocus, en su propio entorno (torch no entra en el del asistente). null = desactivado
+FOOOCUS = Path(CFG.get("fooocus", "~/Fooocus")).expanduser() if CFG.get("fooocus", "~/Fooocus") else None
+CARPETA_IMAGENES = Path(CFG["carpeta_imagenes"]).expanduser() if CFG.get("carpeta_imagenes") else None
 # Comando para "actualiza todo". Por defecto se detecta: yay/paru/pacman (Arch) o dnf (Fedora), + flatpak
 COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
 # Tareas de desarrollo permitidas (nombre -> comando que se ejecuta en la terminal)
@@ -205,6 +210,14 @@ MSG = {
         "clip_prompt_traducir": "Traduce al español (o al inglés si ya está en español) el siguiente texto, sin explicaciones adicionales:\n\n{x}",
         "clip_prompt_explicar": "Explica en español en máximo 3 frases cortas qué hace o significa esto (sin markdown ni bloques de código):\n\n{x}",
         "dictado_ok": "Copiado al portapapeles (Ctrl+V): {x}",
+        "redactando": "Redactando…", "redactar_ok": "Listo, está en el portapapeles. Pégalo con Control V.",
+        "redacta": "Escribe exactamente el texto que se pide, listo para pegar, en español salvo que pidan otro "
+                   "idioma: sin introducción, sin comentarios al final y sin comillas alrededor. Si piden código, "
+                   "devuelve solo el código, sin bloques de markdown.",
+        "imagen_no": "No encontré Fooocus para generar imágenes.",
+        "imagen_ocupado": "Ya estoy generando una imagen, espera a que termine.",
+        "imagen_generando": "Generando la imagen. Tardará uno o dos minutos, te aviso cuando esté.",
+        "imagen_ok": "La imagen está lista.", "imagen_error": "No pude generar la imagen, revisa el registro.",
         "timer_ok": "Temporizador de {t} activado.", "timer_fin": "Temporizador finalizado: {x}",
         "timer_no": "No entendí la duración del temporizador.",
         "tel_no": "El teléfono no está conectado.",
@@ -267,6 +280,14 @@ MSG = {
         "clip_prompt_traducir": "Translate the following text into English (or Spanish if it is already in English), without extra commentary:\n\n{x}",
         "clip_prompt_explicar": "Explain in English in at most 3 short sentences what this does or means (no markdown or code blocks):\n\n{x}",
         "dictado_ok": "Copied to clipboard (Ctrl+V): {x}",
+        "redactando": "Writing…", "redactar_ok": "Done, it's on the clipboard. Paste it with Control V.",
+        "redacta": "Write exactly the requested text, ready to paste, in English unless another language is "
+                   "requested: no introduction, no closing remarks and no surrounding quotes. If code is "
+                   "requested, return only the code, without markdown blocks.",
+        "imagen_no": "I couldn't find Fooocus to generate images.",
+        "imagen_ocupado": "I'm already generating an image, please wait until it's done.",
+        "imagen_generando": "Generating the image. It will take a minute or two, I'll let you know when it's ready.",
+        "imagen_ok": "The image is ready.", "imagen_error": "I couldn't generate the image, check the log.",
         "timer_ok": "Timer set for {t}.", "timer_fin": "Timer finished: {x}",
         "timer_no": "I didn't understand the timer duration.",
         "tel_no": "The phone is not connected.",
@@ -305,6 +326,10 @@ def log(msg):
     print(msg, flush=True)
 
 
+def llm_local():
+    return urllib.parse.urlparse(LLM_URL).hostname in ("127.0.0.1", "localhost", "::1")
+
+
 def validar_config():
     """Comprueba claves desconocidas, rutas y herramientas configuradas en config.json."""
     avisos = []
@@ -319,8 +344,10 @@ def validar_config():
         avisos.append(f"la terminal configurada ({TERMINAL!r}) no está instalada")
     if LLM not in ("ollama", "openai", "ninguno"):
         avisos.append(f"llm desconocido ({LLM!r}): usa ollama, openai o ninguno")
-    elif LLM != "ninguno" and urllib.parse.urlparse(LLM_URL).hostname not in ("127.0.0.1", "localhost", "::1"):
+    elif LLM != "ninguno" and not llm_local():
         avisos.append(f"el LLM está fuera de este equipo ({LLM_URL}): las frases y preguntas salen por la red")
+    if CFG.get("fooocus") and not (FOOOCUS / "venv/bin/python").is_file():
+        avisos.append(f"no encontré Fooocus con su entorno en {FOOOCUS} (fooocus): no podré generar imágenes")
     if CFG.get("llm_clave_env") and not LLM_CLAVE:
         avisos.append(f"la variable de entorno {CFG['llm_clave_env']} (llm_clave_env) no está definida")
     for a in avisos:
@@ -372,7 +399,8 @@ def recita_pista(texto, pista):
 MARCAS_EN = {"open", "launch", "start", "run", "close", "the", "search", "for", "volume", "turn", "up", "down",
              "mute", "unmute", "what", "how", "is", "are", "running", "containers", "lock", "screen", "play",
              "pause", "next", "previous", "song", "music", "stop", "show", "status", "mode", "power", "project",
-             "my", "please", "explain", "why", "who", "can", "you", "set", "to", "internet", "computer", "doing"}
+             "my", "please", "explain", "why", "who", "can", "you", "set", "to", "internet", "computer", "doing",
+             "draw", "write", "image", "picture", "email", "about", "an"}
 MARCAS_ES = {"abre", "abrir", "cierra", "cerrar", "el", "la", "los", "las", "busca", "buscar", "volumen", "sube",
              "baja", "que", "como", "contenedores", "proyecto", "pantalla", "musica", "cancion", "pausa", "modo",
              "en", "de", "del", "por", "esta", "estan", "pon", "levanta", "deten", "explica", "cual", "compu",
@@ -1496,8 +1524,138 @@ def _ej_pregunta(param, _lang, m):
     return llm(MODELO_PREGUNTAS, m["responde"], param).strip()
 
 
+def _ej_redactar(param, _lang, m):
+    notificar(m["redactando"], param, "document-edit", segundos=30)
+    texto = llm(MODELO_REDACTAR, m["redacta"], param).strip()
+    if bloque := re.search(r"```[\w+#-]*\n(.*?)```", texto, flags=re.DOTALL):   # algunos modelos lo envuelven igual
+        texto = bloque.group(1).strip()
+    if not texto:
+        return m["no_entendi"]
+    klipper_escribir(texto)
+    log(f"redactado ({len(texto)} caracteres) con {MODELO_REDACTAR}")
+    return m["redactar_ok"]
+
+
+# --- Imágenes con Fooocus ----------------------------------------------------------
+PROMPT_IMAGEN = ("Convierte la petición en un prompt en inglés para Stable Diffusion XL: una sola línea con el sujeto, "
+                 "el estilo, la iluminación y la composición, separados por comas. Responde solo el prompt, sin comillas.")
+PEDIDO_IMAGEN = (r"^.*?\b(genera\w*|crea\w*|hazme|haz|dibuja\w*|pinta\w*|ilustra\w*|generate|create|make|draw|paint)\b"
+                 r"(\s+(me|us))?\s*((un|una|el|la|a|an|the)\s+)?((imagen\w*|foto\w*|dibujo\w*|ilustracion\w*|image\w*|"
+                 r"picture\w*|photo\w*|drawing|illustration|painting)\s+(de|del|con|of|with)\s+)?")
+_imagen_en_curso = threading.Lock()
+
+
+def carpeta_imagenes():
+    if CARPETA_IMAGENES:
+        return CARPETA_IMAGENES
+    try:
+        r = subprocess.run(["xdg-user-dir", "PICTURES"], capture_output=True, text=True, timeout=3)
+        base = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else HOME / "Pictures"
+    except (OSError, subprocess.TimeoutExpired):
+        base = HOME / "Pictures"
+    return base / NOMBRE
+
+
+def prompt_imagen(pedido):
+    """El LLM describe la imagen en inglés (SDXL entiende poco español). Sin LLM, la descripción tal cual."""
+    descripcion = re.sub(PEDIDO_IMAGEN, "", pedido, count=1, flags=re.IGNORECASE).strip(" .?!,") or pedido
+    if LLM == "ninguno":
+        return descripcion
+    try:
+        prompt = llm(MODELO_PREGUNTAS, PROMPT_IMAGEN, pedido).strip().splitlines()[0].strip(" \"'")
+        return prompt or descripcion
+    except Exception as e:
+        log(f"prompt de imagen sin LLM ({e}): uso la descripción")
+        return descripcion
+
+
+def liberar_vram_llm():
+    """Descarga de la GPU los modelos de Ollama: SDXL necesita casi toda la VRAM de una gráfica de 6 GB."""
+    if LLM != "ollama" or not llm_local():
+        return
+    for modelo in {MODELO_COMANDOS, MODELO_PREGUNTAS, MODELO_REDACTAR}:
+        req = urllib.request.Request(f"{LLM_URL}/api/generate", json.dumps({"model": modelo, "keep_alive": 0}).encode(),
+                                     {"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=15).close()
+        except Exception as e:
+            log(f"no se pudo descargar {modelo} de la GPU: {e}")
+
+
+def generar_imagen(prompt, salida):
+    """Lanza herramientas/imagen_fooocus.py con el Python de Fooocus. La petición va por stdin: el texto dictado
+    nunca llega a la línea de comandos. Devuelve la ruta del PNG o None."""
+    r = subprocess.run([str(FOOOCUS / "venv/bin/python"), "-I", str(BASE / "herramientas/imagen_fooocus.py"),
+                        str(FOOOCUS)], input=json.dumps({"prompt": prompt, "salida": str(salida)}),
+                       capture_output=True, text=True, timeout=900)
+    try:   # Fooocus también escribe en stdout: el resultado es la última línea
+        resultado = json.loads(r.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        resultado = {}
+    if not resultado.get("ok"):
+        log(f"error generando la imagen: {resultado.get('error') or r.stderr.strip()[-800:]}")
+        return None
+    return resultado["ruta"]
+
+
+def _ej_imagen(param, lang, m):
+    if not FOOOCUS or not (FOOOCUS / "venv/bin/python").is_file():
+        return m["imagen_no"]
+    if not _imagen_en_curso.acquire(blocking=False):
+        return m["imagen_ocupado"]
+    try:
+        prompt = prompt_imagen(param)        # con el LLM aún cargado
+    except BaseException:
+        _imagen_en_curso.release()
+        raise
+    log(f"imagen: {prompt!r}")
+
+    def en_segundo_plano():                  # ~1,5 min: mientras, el asistente sigue atendiendo
+        try:
+            carpeta = carpeta_imagenes()
+            carpeta.mkdir(parents=True, exist_ok=True)
+            liberar_vram_llm()
+            t = time.time()
+            ruta = generar_imagen(prompt, carpeta / time.strftime("%Y%m%d-%H%M%S.png"))
+        except Exception as e:
+            log(f"error generando la imagen: {e}")
+            ruta = None
+        finally:
+            _imagen_en_curso.release()
+        if ruta:
+            log(f"imagen lista en {time.time() - t:.0f}s: {ruta}")
+            lanzar(["xdg-open", ruta])
+        msg = m["imagen_ok" if ruta else "imagen_error"]
+        sonido("exito" if ruta else "fallo", esperar=True)
+        notificar("🖼", msg if not ruta else f"{msg}\n{ruta}", ruta or "dialog-warning", segundos=10)
+        if _voz_activa and not _voz_activa.hablando:
+            _voz_activa.decir(msg, lang)
+        if LLM == "ollama":                  # vuelve a cargar el modelo de comandos para el siguiente
+            try:
+                llm(MODELO_COMANDOS, "Responde ok.", "ok")
+            except Exception as e:
+                log(f"no se pudo recargar {MODELO_COMANDOS}: {e}")
+
+    threading.Thread(target=en_segundo_plano, daemon=True).start()
+    return m["imagen_generando"]
+
+
 # --- Tabla declarativa de acciones e interpretación --------------------------------
 PARAM_APP = "<app>"   # en los ejemplos: el parámetro es una app que se busca en la frase
+NO_ES_PREGUNTA = r"^(?!\W*(que|what|como|how|por que|why|cual|which)\b)"
+# «Genera una imagen de…», «dibújame…». «Crea una imagen de docker» es otra cosa
+PIDE_IMAGEN = (NO_ES_PREGUNTA + r"(?!.*\b(docker|contenedor\w*|container\w*|iso|disco|disk|podman)\b)"
+               r".*\b(genera\w*|crea\w*|haz|hazme|dibuja\w*|pinta\w*|ilustra\w*|generate|create|make|draw|paint)\b"
+               r".*\b(imagen\w*|foto\w*|dibujo\w*|ilustracion\w*|image\w*|picture\w*|photo\w*|drawing\w*|"
+               r"illustration\w*|painting\w*)\b")
+# «Redacta…», «escríbeme un correo…», «write a function…». «Escribe hola mundo» sigue siendo dictado
+DOCUMENTOS = (r"(correo|email|e-?mail|mail|mensaje|carta|parrafo|texto|resumen|poema|cancion|historia|cuento|post|"
+              r"publicacion|tuit|tweet|descripcion|respuesta|invitacion|discurso|funcion|script|codigo|programa|"
+              r"clase|consulta|query|regex|expresion regular|message|letter|paragraph|text|summary|poem|song|story|"
+              r"description|reply|invitation|speech|function|code|program|class)")
+PIDE_REDACTAR = (NO_ES_PREGUNTA + r"\W*(redacta\w*|componme|compon|escribeme|escribe|escribir|genera\w*|crea\w*|"
+                 r"hazme|haz|draft|write|compose|generate|create)\b(\s+(me|nos|le|les))?\s+"
+                 r"(un|una|unos|unas|el|la|a|an|the|some)\s+(\w+\s+)?" + DOCUMENTOS + r"\b")
 
 
 class DefinicionAccion(NamedTuple):
@@ -1788,6 +1946,30 @@ REGISTRO_ACCIONES = [
         evidencia=r"actualiz|update|upgrade",
         reglas=((r"^(?!\W*(como|how|que|what|por que|why|cual)\b).*\b(actualiza\w*|update|upgrade)\b.*\b(todo|sistema|paquetes|equipo|compu|pc|everything|system|packages|computer)\b", ""),),
         ejecutor=_ej_actualizar_sistema,
+    ),
+    DefinicionAccion(
+        nombre="imagen",
+        riesgo=True,   # descarga el LLM de la GPU y la ocupa más de un minuto
+        ejemplos=(("genera una imagen de un perro en la playa", ""), ("dibújame un dragón", ""),
+                  ("hazme un dibujo de una casa en el bosque", ""), ("create an image of a mountain at sunset", ""),
+                  ("draw a cat wearing a hat", "")),
+        prompt="generar una imagen nueva con IA (generate/draw a picture). parametro = la petición completa",
+        evidencia=r"imagen|foto|dibuj|ilustra|pinta|image|picture|photo|draw|illustrat|paint",
+        reglas=((PIDE_IMAGEN, None), (r"^\W*(dibuja\w*|draw)\b", None)),
+        ejecutor=_ej_imagen,
+    ),
+    DefinicionAccion(
+        nombre="redactar",
+        riesgo=True,   # sustituye lo que haya en el portapapeles
+        ejemplos=(("redacta un correo para mi jefe pidiendo el viernes libre", ""),
+                  ("escríbeme un mensaje de cumpleaños para mi hermana", ""),
+                  ("escribe una función en python que ordene una lista", ""),
+                  ("write an email to the team about the release", ""), ("draft a reply to the client", "")),
+        prompt="redactar un texto o código nuevo y dejarlo en el portapapeles (write an email, message, function…). "
+               "parametro = la petición completa",
+        evidencia=r"redact|escrib|compon|genera|crea|haz|write|draft|compose|generate|create",
+        reglas=((PIDE_REDACTAR, None), (r"^\W*(redacta\w*|draft)\b", None)),
+        ejecutor=_ej_redactar,
     ),
     DefinicionAccion(
         nombre="pregunta",
@@ -2120,8 +2302,10 @@ def interpretar(texto):
     if n != normalizar(texto):
         log(f"corregido: {n!r}")
         texto = n
-    # Dictado directo: "escribe ..." / "dicta ..." / "type ..." (con o sin coma tras el verbo)
-    if m := re.match(r"^\W*(escribe|dicta|teclea|type)[,:;]?\s+(.+)$", texto.strip(), flags=re.IGNORECASE):
+    # Dictado directo: "escribe ..." / "dicta ..." / "type ..." (con o sin coma tras el verbo).
+    # «Escribe un correo a…» no es dictado: lo resuelve la regla de redactar
+    m = re.match(r"^\W*(escribe|dicta|teclea|type)[,:;]?\s+(.+)$", texto.strip(), flags=re.IGNORECASE)
+    if m and not re.search(PIDE_REDACTAR, n):
         contenido = m.group(2).strip()
         if not re.search(r"\b(tu contrasena|your password)\b", normalizar(contenido)):
             return "dictar", contenido
@@ -2233,6 +2417,8 @@ def validar_interpretacion(accion, param, n, texto):
         accion, param = "no_entendido", ""
     if accion == "buscar_web":
         param = extraer_busqueda(texto) or param
+    if accion in ("imagen", "redactar"):     # la petición completa, no el resumen del LLM ni el del ejemplo
+        param = texto
     # "¿Cómo actualizo un paquete de npm?" es una pregunta, no una orden de actualizar el sistema
     if accion == "actualizar_sistema" and re.match(r"^\W*(como|how|que|what|por que|why|cual)\b", n):
         accion, param = "pregunta", texto

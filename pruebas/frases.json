@@ -636,5 +636,70 @@
     "frase": "Remind me in an hour",
     "accion": "temporizador",
     "param": "3600"
+  },
+  {
+    "frase": "Genera una imagen de un zorro durmiendo en la nieve",
+    "accion": "imagen",
+    "param": "Genera una imagen de un zorro durmiendo en la nieve",
+    "idioma": "es"
+  },
+  {
+    "frase": "Dibújame un gato astronauta",
+    "accion": "imagen",
+    "param": "Dibújame un gato astronauta",
+    "idioma": "es"
+  },
+  {
+    "frase": "Hazme un dibujo de una casa en el bosque",
+    "accion": "imagen",
+    "param": "Hazme un dibujo de una casa en el bosque",
+    "idioma": "es"
+  },
+  {
+    "frase": "Create an image of a sunset over the sea",
+    "accion": "imagen",
+    "param": "Create an image of a sunset over the sea",
+    "idioma": "en"
+  },
+  {
+    "frase": "Draw a robot playing guitar",
+    "accion": "imagen",
+    "param": "Draw a robot playing guitar",
+    "idioma": "en"
+  },
+  {
+    "frase": "Redacta un correo para mi jefe pidiendo el viernes libre",
+    "accion": "redactar",
+    "param": "Redacta un correo para mi jefe pidiendo el viernes libre",
+    "idioma": "es"
+  },
+  {
+    "frase": "Escribe un correo a mi jefe diciendo que llego tarde",
+    "accion": "redactar",
+    "param": "Escribe un correo a mi jefe diciendo que llego tarde",
+    "idioma": "es"
+  },
+  {
+    "frase": "Escríbeme una función en Python que ordene una lista",
+    "accion": "redactar",
+    "param": "Escríbeme una función en Python que ordene una lista",
+    "idioma": "es"
+  },
+  {
+    "frase": "Write an email to the team about the release",
+    "accion": "redactar",
+    "param": "Write an email to the team about the release",
+    "idioma": "en"
+  },
+  {
+    "frase": "Write me a short poem about coffee",
+    "accion": "redactar",
+    "param": "Write me a short poem about coffee",
+    "idioma": "en"
+  },
+  {
+    "frase": "¿Qué es una imagen de Docker?",
+    "accion": "pregunta",
+    "param": "¿Qué es una imagen de Docker?"
   }
 ]
