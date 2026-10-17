@@ -1,0 +1,71 @@
+# Pruebas de reglas, clasificador y salvaguardas en cada push y pull request (sin GPU, sin Whisper ni LLM).
+# Las acciones van fijadas por commit: una etiqueta como @v7 se puede mover; un commit, no.
+name: Pruebas
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Dependencias (versiones y hashes fijos)
+        run: |
+          python -m venv venv
+          venv/bin/pip install -q --require-hashes -r requirements.lock
+
+      - name: Modelos en caché (clasificador y Silero VAD)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: modelos
+          key: modelos-e5-761b726d-vad-4cbf549b
+
+      - name: Descargar los modelos que falten (commit y hash fijos, como instalar.sh)
+        run: |
+          venv/bin/python -I - <<'EOF'
+          import hashlib, urllib.request
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+          for f in ["onnx/model_quantized.onnx", "tokenizer.json"]:
+              hf_hub_download("Xenova/multilingual-e5-small", f, local_dir="modelos/e5-small",
+                              revision="761b726dd34fb83930e26aab4e9ac3899aa1fa78")
+          vad = Path("modelos/silero_vad_v6.onnx")
+          if not vad.exists():
+              urllib.request.urlretrieve("https://raw.githubusercontent.com/SYSTRAN/faster-whisper/v1.2.1/"
+                                         "faster_whisper/assets/silero_vad_v6.onnx", vad)
+          assert hashlib.sha256(vad.read_bytes()).hexdigest() == \
+              "4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2", "hash de Silero VAD"
+          EOF
+
+      - name: Pruebas
+        run: venv/bin/python pruebas/test_frases.py
+
+  locks:
+    # Los .lock deben corresponder a los requirements*.txt (p. ej. tras una actualización de Dependabot)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - name: Regenerar y comparar
+        run: |
+          for f in requirements requirements-nvidia requirements-intel; do
+            uv pip compile "$f.txt" --generate-hashes --python-version 3.13 \
+              --python-platform x86_64-manylinux_2_28 --quiet -o "$f.lock"
+          done
+          git diff --exit-code -- '*.lock'

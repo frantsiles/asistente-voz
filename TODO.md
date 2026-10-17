@@ -76,13 +76,13 @@ Regla de diseño que se mantiene en todo: **solo acciones de una lista blanca**,
 
 Lo que ya está cubierto: el LLM solo elige acciones de la lista blanca (esquema JSON), cada acción necesita evidencia en la frase, los parámetros se validan contra lo que existe, el texto dictado nunca pasa por un shell, `sudo` se escribe en una terminal visible y solo escucha al pulsar el atajo. Detalle en [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md#capas-de-seguridad).
 
-- [ ] 🔴 L — **Auditoría completa**: recorrer cada camino de ejecución (`tareas`, `comando_actualizar`, scripts de KWin, llamadas D-Bus, KDE Connect, Docker) buscando inyección de comandos, rutas y permisos de archivos. Corregir lo que aparezca, añadir pruebas y documentarlo en `SECURITY.md` (también cómo reportar problemas).
-- [ ] 🟡 S — **`buscar_web`**: la frase se pasa a `firefox --search`; si empezara por `-`, Firefox podría tomarla como opción. Añadir `--` o quitar los guiones iniciales.
-- [ ] 🟡 S — **Archivos temporales**: si falta `XDG_RUNTIME_DIR` (al ejecutarlo a mano), el script de KWin y los WAV se escriben en `/tmp`, donde otro usuario podría crearlos antes. Usar `tempfile.mkdtemp()` como respaldo o negarse a arrancar.
-- [ ] 🟡 M — **Dependencias y modelos verificados**: `requirements*.txt` fija versiones pero no hashes (`pip install --require-hashes`), y los modelos de Hugging Face se descargan sin fijar `revision`.
-- [ ] ⚪ S — **Portapapeles con instrucciones**: probar a propósito que un texto copiado con órdenes («ignora lo anterior y…») no cambia nada al resumirlo o traducirlo. Hoy la respuesta solo se lee en voz alta, pero no hay prueba que lo garantice.
-- [ ] ⚪ S — **Textos que empiezan por `-` en `notify-send`**: una respuesta del LLM que empiece por `--` se tomaría como opción. Pasar `--` antes del título y el cuerpo.
-- [ ] 🟡 M — **CI**: GitHub Actions que corra `pruebas/test_frases.py` en cada push (sin GPU ni LLM), para que una regla rota no llegue a `main`.
+- [x] 🔴 L — **Auditoría completa**: recorrer cada camino de ejecución (`tareas`, `comando_actualizar`, scripts de KWin, llamadas D-Bus, KDE Connect, Docker) buscando inyección de comandos, rutas y permisos de archivos. Corregir lo que aparezca, añadir pruebas y documentarlo en `SECURITY.md` (también cómo reportar problemas).
+- [x] 🟡 S — **`buscar_web`**: la frase se pasa a `firefox --search`; si empezara por `-`, Firefox podría tomarla como opción. Añadir `--` o quitar los guiones iniciales.
+- [x] 🟡 S — **Archivos temporales**: si falta `XDG_RUNTIME_DIR` (al ejecutarlo a mano), el script de KWin y los WAV se escriben en `/tmp`, donde otro usuario podría crearlos antes. Usar `tempfile.mkdtemp()` como respaldo o negarse a arrancar.
+- [x] 🟡 M — **Dependencias y modelos verificados**: `requirements*.txt` fija versiones pero no hashes (`pip install --require-hashes`), y los modelos de Hugging Face se descargan sin fijar `revision`.
+- [x] ⚪ S — **Portapapeles con instrucciones**: probar a propósito que un texto copiado con órdenes («ignora lo anterior y…») no cambia nada al resumirlo o traducirlo. Hoy la respuesta solo se lee en voz alta, pero no hay prueba que lo garantice.
+- [x] ⚪ S — **Textos que empiezan por `-` en `notify-send`**: una respuesta del LLM que empiece por `--` se tomaría como opción. Pasar `--` antes del título y el cuerpo.
+- [x] 🟡 M — **CI**: GitHub Actions que corra `pruebas/test_frases.py` en cada push (sin GPU ni LLM), para que una regla rota no llegue a `main`.
 
 ---
 

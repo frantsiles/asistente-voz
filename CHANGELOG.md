@@ -10,6 +10,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - **Intérprete por capas**: reglas → **clasificador por embeddings** (multilingual-e5-small, ONNX int8, ~3 ms en CPU) → LLM solo si el clasificador duda. Con 36 frases que las reglas no cubren: de 6/20 órdenes y 5,5 s a 17/19 y 3 ms de mediana, rechazando 16/16 frases de charla real de reuniones. Ejemplos por acción en el registro (`ejemplos`) y de charla (`EJEMPLOS_CHARLA`). `clasificador` y `umbral_clasificador` en `config.json`.
 - **Prompt con ejemplos y contexto de micrófono abierto**: sin ellos ningún modelo probado respondía `no_entendido` ante charla (0/16); con ellos, gemma4:e2b rechaza 15/16.
 
+### Seguridad
+- Auditoría de cada camino de ejecución; resultado en [SECURITY.md](SECURITY.md) (modelo de amenazas, protecciones y cómo informar de un problema).
+- Un texto dictado o generado que empiece por `-` ya no puede tomarse como opción: `--` en `notify-send` y `busctl`, `--share-text=…` en KDE Connect y sin guiones iniciales en las búsquedas.
+- Sin `XDG_RUNTIME_DIR` los temporales iban a `/tmp`, donde otro usuario podía crearlos antes: ahora van a una carpeta de `mkdtemp` (0700).
+- Las grabaciones de voz quedan en una carpeta 0700.
+- Aviso al arrancar si la clave de un LLM remoto viajaría sin cifrar (`http://`).
+- El eco de `tareas` y `comando_actualizar` en la terminal ya no se rompe con comillas en el comando.
+- Dependencias con hashes (`requirements*.lock`, `pip --require-hashes`) y modelos de Hugging Face con commit fijo; Silero VAD se comprueba con su SHA-256.
+- GitHub Actions: pruebas en cada push y pull request, y comprobación de que los `.lock` corresponden a los `.txt`. Acciones fijadas por commit y sin credenciales.
+
 ### Cambiado
 - La salvaguarda de evidencia solo se aplica a las acciones con `riesgo` (bloquear, cerrar, volumen, brillo, ventanas, Docker, tareas, teléfono, actualizar): en las demás descartaba órdenes válidas. Abrir o cerrar una app exige que se mencione en la frase.
 - **Proveedor de LLM configurable** (`llm`): `ollama` (API nativa, por defecto), `openai` (cualquier servidor compatible: llama.cpp, LM Studio, LocalAI, vLLM, OpenVINO Model Server) o `ninguno` (solo reglas, para equipos con pocos recursos). `llm_url` y `llm_clave_env` (la clave se lee de una variable de entorno, nunca de `config.json`). Aviso al arrancar si el LLM está fuera del equipo.
@@ -23,6 +33,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
 
 ### Corregido
+- «¿Cómo escribo una función…?» se interpretaba como «explica lo que copié»: más verbos en primera persona y «how to» cuentan como pregunta.
 - «Cierra y» (frase cortada) cerraba la ventana actual.
 - «Escritorio dos» no se entendía: solo «escritorio 2».
 - Con modelos de razonamiento (Qwen 3.5, Gemma 4) Ollama «pensaba» minutos antes de contestar y la petición caducaba: ahora se envía `think: false`.

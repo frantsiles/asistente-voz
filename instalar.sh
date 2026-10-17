@@ -73,7 +73,8 @@ fi
 echo "    $PY ($("$PY" --version))"
 [ -d "$DIR/venv" ] || "$PY" -m venv "$DIR/venv"
 "$DIR/venv/bin/pip" install -q --upgrade pip
-"$DIR/venv/bin/pip" install -q -r "$DIR/requirements-$MOTOR.txt"
+# Versiones y hashes fijos (requirements-*.lock): si un paquete de PyPI cambia, pip se niega a instalarlo
+"$DIR/venv/bin/pip" install -q --require-hashes -r "$DIR/requirements-$MOTOR.lock"
 
 echo "==> Modelos (Whisper ~800 MB-1,6 GB + voces ~200 MB + clasificador ~113 MB)"
 "$DIR/venv/bin/python" -I - "$DIR/modelos" "$MOTOR" "${WHISPER_MODELO:-large-v3-turbo}" <<'EOF'
@@ -81,25 +82,38 @@ import sys
 from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 dst, motor, modelo = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+# Commit fijo de cada repositorio de Hugging Face: si alguien cambia los archivos, no se descargan.
+# Para actualizar un modelo, cambia aquí su commit (huggingface.co/api/models/<repo> -> "sha").
+REVISION = {
+    "large-v3-turbo": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",     # dropbox-dash/faster-whisper-large-v3-turbo
+    "base": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",               # Systran/faster-whisper-base
+    "OpenVINO/whisper-medium-int8-ov": "8d43cce846729381f56bd45a1c70925cee2222ff",
+    "OpenVINO/whisper-base-int8-ov": "0606293f0511136ada21755a265492f623a934b8",
+    "rhasspy/piper-voices": "c10ece1aade47bb51c153c893d14e5bf8e5b7117",
+    "Xenova/multilingual-e5-small": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+}
 if motor == "nvidia":
     from faster_whisper import download_model
-    if not (dst / f"faster-whisper-{modelo}").exists():
-        download_model(modelo, output_dir=str(dst / f"faster-whisper-{modelo}"))
+    if not (dst / f"faster-whisper-{modelo}").exists():   # otro WHISPER_MODELO: sin commit fijo
+        download_model(modelo, output_dir=str(dst / f"faster-whisper-{modelo}"), revision=REVISION.get(modelo))
     if not (dst / "faster-whisper-base").exists():      # palabra de activación
-        download_model("base", output_dir=str(dst / "faster-whisper-base"))
+        download_model("base", output_dir=str(dst / "faster-whisper-base"), revision=REVISION["base"])
 else:
     for m in ["whisper-medium-int8-ov", "whisper-base-int8-ov"]:   # comandos / palabra de activación
         if not (dst / m).exists():
-            snapshot_download("OpenVINO/" + m, local_dir=dst / m)
+            snapshot_download("OpenVINO/" + m, local_dir=dst / m, revision=REVISION["OpenVINO/" + m])
 for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medium/en_US-lessac-medium.onnx"]:
     for ext in ["", ".json"]:
         if not (dst / "voces" / (voz + ext)).exists():
-            hf_hub_download("rhasspy/piper-voices", voz + ext, local_dir=dst / "voces")
+            hf_hub_download("rhasspy/piper-voices", voz + ext, local_dir=dst / "voces",
+                            revision=REVISION["rhasspy/piper-voices"])
 # Clasificador de comandos: multilingual-e5-small en ONNX int8 (~113 MB)
 for f in ["onnx/model_quantized.onnx", "tokenizer.json"]:
     if not (dst / "e5-small" / f).exists():
-        hf_hub_download("Xenova/multilingual-e5-small", f, local_dir=dst / "e5-small")
+        hf_hub_download("Xenova/multilingual-e5-small", f, local_dir=dst / "e5-small",
+                        revision=REVISION["Xenova/multilingual-e5-small"])
 vad_dst = dst / "silero_vad_v6.onnx"
+VAD_SHA256 = "4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2"
 if not vad_dst.exists():
     try:
         import shutil, faster_whisper.vad as v
@@ -110,6 +124,10 @@ if not vad_dst.exists():
             "https://raw.githubusercontent.com/SYSTRAN/faster-whisper/v1.2.1/faster_whisper/assets/silero_vad_v6.onnx",
             vad_dst,
         )
+import hashlib
+if hashlib.sha256(vad_dst.read_bytes()).hexdigest() != VAD_SHA256:
+    vad_dst.unlink()
+    sys.exit("silero_vad_v6.onnx no coincide con el hash esperado: borrado")
 EOF
 
 echo "==> Configuración"

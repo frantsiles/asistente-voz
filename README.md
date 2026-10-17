@@ -292,6 +292,9 @@ docs/CONTRIBUIR.md      # cómo añadir acciones y probarlas
 pruebas/                # frases de prueba y salvaguardas (python pruebas/test_frases.py)
 instalar.sh             # instalación para el usuario actual
 requirements*.txt       # comunes + -intel (OpenVINO) / -nvidia (faster-whisper)
+requirements*.lock      # lo que se instala: todas las dependencias con hashes
+SECURITY.md             # modelo de amenazas, protecciones y cómo informar de un problema
+.github/workflows/      # pruebas en cada push
 systemd/                # servicio de usuario y entrada del menú (atajo)
 ```
 

@@ -701,5 +701,20 @@
     "frase": "¿Qué es una imagen de Docker?",
     "accion": "pregunta",
     "param": "¿Qué es una imagen de Docker?"
+  },
+  {
+    "frase": "¿Cómo escribo una función recursiva?",
+    "accion": "pregunta",
+    "param": "¿Cómo escribo una función recursiva?"
+  },
+  {
+    "frase": "¿Cómo instalo Docker en Arch?",
+    "accion": "pregunta",
+    "param": "¿Cómo instalo Docker en Arch?"
+  },
+  {
+    "frase": "How to reverse a string in Python?",
+    "accion": "pregunta",
+    "param": "How to reverse a string in Python?"
   }
 ]

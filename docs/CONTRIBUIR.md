@@ -140,6 +140,19 @@ Cada comando aparece como `«texto» [idioma] -> accion(parámetro)`. Si Whisper
 | Una herramienta de consola nueva | `apps_terminal` en `config.json` |
 | Un comando de desarrollo por voz | `tareas` en `config.json`: no hace falta tocar código |
 
+## Dependencias
+
+Las versiones directas están en `requirements*.txt`; lo que se instala sale de `requirements*.lock`, con todas las dependencias y sus hashes. Si cambias un `.txt` (o lo cambia Dependabot), regenera los `.lock`:
+
+```bash
+for f in requirements requirements-nvidia requirements-intel; do
+  uv pip compile "$f.txt" --generate-hashes --python-version 3.13 \
+    --python-platform x86_64-manylinux_2_28 --quiet -o "$f.lock"
+done
+```
+
+La integración continua falla si un `.lock` no corresponde a su `.txt`. Para cambiar de versión un modelo de Hugging Face, actualiza su commit en `REVISION` dentro de `instalar.sh`.
+
 ## Flujo de git
 
 `main` está protegida en GitHub: se puede hacer push directo, pero **no se permite `git push --force` ni borrar la rama**. Si un push se rechaza porque hay commits nuevos en GitHub, integra los cambios en vez de forzar:

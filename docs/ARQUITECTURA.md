@@ -128,8 +128,12 @@ stateDiagram-v2
 ## Capas de seguridad
 
 1. **Lista blanca de acciones**: el LLM solo puede elegir nombres del registro (esquema JSON) y nunca escribe comandos.
-2. **Evidencia por palabras clave** para cada acción que propone el LLM.
+2. **Evidencia por palabras clave** para las acciones con `riesgo` que proponen el clasificador o el LLM.
 3. **Parámetros validados** contra lo que existe (apps, atajos, tareas, contenedores, proyectos).
 4. **Confirmación por voz** para las acciones de `CONFIRMAR`.
 5. **Contraseñas fuera**: `sudo` se escribe en una terminal visible (el asistente nunca la ve), y «lee lo que copié» no lee nada que parezca una contraseña (`parece_secreto()`).
 6. **Sin red**, salvo la descarga inicial de modelos: Whisper, el LLM y Piper corren en local. Si `llm_url` apunta fuera del equipo, `validar_config()` lo avisa al arrancar.
+7. **Textos que no son opciones**: lo dictado o generado nunca pasa por un shell, y a `notify-send` y `busctl` les llega después de `--`.
+8. **Temporales y grabaciones privados** (`XDG_RUNTIME_DIR` o `mkdtemp`; `grabaciones/` en 0700), **dependencias con hashes** y **modelos con commit fijo**.
+
+El detalle, el modelo de amenazas y cómo informar de un problema están en [SECURITY.md](../SECURITY.md).

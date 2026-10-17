@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import threading
 import time
 import unicodedata
@@ -170,7 +171,9 @@ FILTRO_ACTIVACION = 0.70      # similitud mínima para pasar al modelo principal
 FILTRO_SEGURO = 0.90          # si el filtro está así de seguro, basta una confirmación >= FILTRO_ACTIVACION
 
 SONIDOS = Path("/usr/share/sounds/ocean/stereo")
-RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+# Carpeta privada para el script de KWin y los WAV. Sin XDG_RUNTIME_DIR (al ejecutarlo a mano) nunca /tmp a secas:
+# otro usuario podría crear esos archivos antes. mkdtemp crea una carpeta nueva solo para este usuario (0700)
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.mkdtemp(prefix="asistente-voz-"))
 os.environ["PATH"] = f"{HOME}/.local/bin:{os.environ.get('PATH', '/usr/bin')}"
 
 # Textos que Whisper "alucina" cuando solo hay silencio o ruido
@@ -348,6 +351,8 @@ def validar_config():
         avisos.append(f"el LLM está fuera de este equipo ({LLM_URL}): las frases y preguntas salen por la red")
     if CFG.get("fooocus") and not (FOOOCUS / "venv/bin/python").is_file():
         avisos.append(f"no encontré Fooocus con su entorno en {FOOOCUS} (fooocus): no podré generar imágenes")
+    if LLM_CLAVE and not llm_local() and urllib.parse.urlparse(LLM_URL).scheme != "https":
+        avisos.append(f"la clave del LLM viajaría sin cifrar a {LLM_URL}: usa https")
     if CFG.get("llm_clave_env") and not LLM_CLAVE:
         avisos.append(f"la variable de entorno {CFG['llm_clave_env']} (llm_clave_env) no está definida")
     for a in avisos:
@@ -448,7 +453,7 @@ def notificar(titulo, cuerpo="", icono="audio-input-microphone", segundos=6, tra
     if _notif_id:
         cmd += ["-r", _notif_id]
     try:
-        r = subprocess.run(cmd + [titulo, cuerpo], capture_output=True, text=True, timeout=3)
+        r = subprocess.run(cmd + ["--", titulo, cuerpo], capture_output=True, text=True, timeout=3)
         _notif_id = r.stdout.strip() or None
     except subprocess.TimeoutExpired:      # el servidor de notificaciones no responde: no bloquear
         log("notify-send no respondió")
@@ -749,6 +754,7 @@ def guardar_grabacion(audio, conservar=10, carpeta="grabaciones", sufijo=""):
     """Guarda las últimas grabaciones para poder diagnosticar errores de transcripción."""
     d = BASE / carpeta
     d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)                      # es tu voz: solo para tu usuario
     with wave.open(str(d / time.strftime(f"%Y%m%d-%H%M%S{sufijo}.wav")), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
@@ -772,6 +778,13 @@ ARGS_TERMINAL = {"kitty": ["-o", "confirm_os_window_close=0"], "foot": [], "gnom
 
 def cmd_terminal(*args):
     return [TERMINAL, *ARGS_TERMINAL.get(Path(TERMINAL).name, ["-e"]), *args]
+
+
+def comando_en_terminal(cmd, m):
+    """Un comando de config.json (tareas, comando_actualizar) en una terminal visible. El comando es de confianza
+    (lo escribiste tú); el eco va entre comillas de shell para que unas comillas en él no rompan la línea."""
+    return cmd_terminal("bash", "-c", f'echo {shlex.quote("$ " + cmd)}; {cmd}; echo; '
+                                      f'read -rp {shlex.quote(m["actualizar_fin"])} _')
 
 
 def _firma_apps():
@@ -980,7 +993,8 @@ def parece_secreto(texto):
 
 
 def klipper_escribir(texto):
-    subprocess.run(["busctl", "--user", "call", "org.kde.klipper", "/klipper",
+    # «--»: un texto que empiece por «-» (dictado o del LLM) no debe tomarse como opción de busctl
+    subprocess.run(["busctl", "--user", "call", "--", "org.kde.klipper", "/klipper",
                     "org.kde.klipper.klipper", "setClipboardContents", "s", texto],
                    capture_output=True, timeout=3)
 
@@ -1117,7 +1131,7 @@ def kdeconnect_accion(modo, m):
         texto = klipper_leer()
         if not texto:
             return m["clip_vacio"]
-        subprocess.run(["kdeconnect-cli", "-d", dev_id, "--share-text", texto], capture_output=True, timeout=5)
+        subprocess.run(["kdeconnect-cli", "-d", dev_id, f"--share-text={texto}"], capture_output=True, timeout=5)
         return m["tel_clip"].format(x=nombre)
     return m["no_entendi"]
 
@@ -1390,7 +1404,7 @@ def _ej_ejecutar_tarea(param, _lang, m):
     if not nombre:
         return m["tarea_no"].format(x=param)
     cmd = TAREAS[nombre]
-    lanzar(cmd_terminal("bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'))
+    lanzar(comando_en_terminal(cmd, m))
     return m["tarea"].format(x=nombre)
 
 
@@ -1501,8 +1515,11 @@ def _ej_perfil_energia(param, _lang, m):
 
 
 def _ej_buscar_web(param, _lang, m):
-    lanzar(["firefox", "--search", param])
-    return m["buscando"].format(x=param)
+    consulta = param.lstrip("- ")       # si empezara por «-», Firefox la tomaría como una opción
+    if not consulta:
+        return m["no_entendi"]
+    lanzar(["firefox", "--search", consulta])
+    return m["buscando"].format(x=consulta)
 
 
 def _ej_bloquear_pantalla(_param, _lang, _m):
@@ -1515,7 +1532,7 @@ def _ej_actualizar_sistema(_param, _lang, m):
     cmd = comando_actualizar()
     if not cmd:
         return m["actualizar_no"]
-    lanzar(cmd_terminal("bash", "-c", f'echo "$ {cmd}"; {cmd}; echo; read -rp "{m["actualizar_fin"]}" _'))
+    lanzar(comando_en_terminal(cmd, m))
     return m["actualizando"]
 
 
@@ -1976,8 +1993,12 @@ REGISTRO_ACCIONES = [
         prompt="una pregunta clara de conocimiento general o de programación. parametro = la pregunta completa",
         reglas=(
             (r"^(?!.*\b(busca|internet|google|search|copi\w*|copied|portapapeles|clipboard|puerto|port|consum\w*|gpu|grafica)\b)"
-             r"\W*(que es|que son|que significa|como (funciona|se|hago|puedo)|"
-             r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can)|"
+             r"\W*(que es|que son|que significa|"
+             # «¿Cómo escribo…?» en primera persona: es una pregunta, no una orden ni el portapapeles
+             r"como (funciona|se|hago|puedo|debo|escribo|creo|instalo|configuro|uso|implemento|declaro|defino|"
+             r"ordeno|convierto|conecto|despliego|soluciono|arreglo|evito|leo|obtengo|agrego|anado|elimino|borro|"
+             r"calculo|recorro|manejo|pruebo|depuro|optimizo)|"
+             r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can|to|should|would)|"
              r"why|explain|difference between)\b", None),
         ),
         ejecutor=_ej_pregunta,
