@@ -440,17 +440,16 @@ def probar_salvaguardas() -> tuple[int, int]:
         asistente.subprocess.run = orig[3]
 
         # auto: Fooocus si está instalado; si no, OpenVINO con su modelo; null lo desactiva
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            (asistente.Path(tmp) / "ov").mkdir()
-            (asistente.Path(tmp) / "ov/model_index.json").touch()
-            asistente.FOOOCUS, asistente.IMAGEN_OV = asistente.Path(tmp) / "nada", asistente.Path(tmp) / "ov"
-            motores = [asistente.motor_imagenes()]
-            asistente.IMAGENES = "fooocus"
-            motores.append(asistente.motor_imagenes())
-            asistente.IMAGENES = None
-            motores.append(asistente.motor_imagenes())
-            asistente.IMAGENES = orig[12]
+        # (sin depender de que openvino-genai esté instalado: en la CI no lo está)
+        hay_ov = asistente.hay_openvino_imagen
+        asistente.hay_openvino_imagen = lambda: True
+        asistente.FOOOCUS = asistente.Path("/no/existe")
+        motores = [asistente.motor_imagenes()]
+        asistente.IMAGENES = "fooocus"
+        motores.append(asistente.motor_imagenes())
+        asistente.IMAGENES = None
+        motores.append(asistente.motor_imagenes())
+        asistente.IMAGENES, asistente.hay_openvino_imagen = orig[12], hay_ov
         verificar("motor de imágenes: auto usa OpenVINO sin Fooocus; fooocus y null no", motores == ["openvino", None, None],
                   repr(motores))
 
