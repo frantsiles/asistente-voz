@@ -45,8 +45,10 @@ Regla de diseño que se mantiene en todo: **solo acciones de una lista blanca**,
   - «Batería del teléfono» → lectura por D-Bus de `org.kde.kdeconnect`.
   - «Manda el portapapeles al teléfono» → `kdeconnect-cli --share-text`.
 - [x] 🟡 M — **Dictado**: «escribe …» teclea el texto en la ventana activa. En KDE/Wayland `wtype` no funciona; usar `kdotool`/`wdotool` o `ydotool` (necesita acceso a `/dev/uinput`), o bien copiar al portapapeles de Klipper y enviar `Ctrl+V`.
+- [x] 🟡 M — **Redactar**: «redacta un correo para…», «escríbeme una función que…» → el LLM escribe el texto o el código y lo deja en el portapapeles.
+- [x] 🟡 M — **Imágenes con Fooocus**: «genera una imagen de…» → el LLM escribe el prompt, se libera la VRAM de Ollama y Fooocus genera en segundo plano.
 - [ ] ⚪ M — **«¿Qué hay en pantalla?»**: captura con Spectacle (`spectacle -b -n -o`) y descripción con un modelo de visión local. Para texto en pantalla, `qwen2.5vl` funciona mejor que `llama3.2-vision`; con 6 GB de VRAM, la versión 3B. Descargar el modelo de voz o de visión según haga falta (`keep_alive: 0` tras responder).
-- [ ] ⚪ S — **Suspender / reiniciar / apagar** con confirmación por voz («¿seguro?» → «sí»).
+- [x] ⚪ S — **Suspender / reiniciar / apagar** con confirmación por voz («¿seguro?» → «sí»).
 
 ## 4. Desarrollo
 
@@ -62,7 +64,7 @@ Regla de diseño que se mantiene en todo: **solo acciones de una lista blanca**,
 - [x] 🟡 S — **«¿Qué está consumiendo CPU / memoria?»**: lee los 2–3 procesos con mayor uso (`ps -eo comm,%cpu,rss --sort=-%cpu`) y responde en una frase («Firefox usa 35 por ciento de procesador y 2,4 gigas de memoria»). Muy útil cuando suben la temperatura o los ventiladores.
 - [x] 🟡 S — **Avisar cuántas actualizaciones hay** sin sudo: `checkupdates` + `yay -Qua` en Arch, `dnf check-update` en Fedora. «¿Hay actualizaciones?» → «Hay 23 paquetes por actualizar».
 - [x] 🟡 S — **Estado más completo**: uso y VRAM de la GPU (`nvidia-smi`), batería (`/sys/class/power_supply/BAT0/capacity` y `status`), red activa.
-- [ ] ⚪ S — **Limpieza**: «limpia la caché de paquetes» → `paccache -r` / `yay -Sc` / `dnf clean` en la terminal.
+- [x] ⚪ S — **Limpieza**: «limpia la caché de paquetes» → `paccache -r` / `yay -Sc` / `dnf clean` en la terminal.
 
 ## 6. Arquitectura y calidad
 

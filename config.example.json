@@ -24,5 +24,6 @@
   "whisper_modelo": "large-v3-turbo",
   "whisper_precision": "int8_float16",
   "comando_actualizar": null,
+  "comando_limpiar": null,
   "hablar": true
 }

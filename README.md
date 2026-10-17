@@ -57,6 +57,8 @@ flowchart LR
 | "Busca en internet el clima en San José" | "Search the web for Python tutorials" | Búsqueda en Firefox |
 | "Bloquea la pantalla" | "Lock the screen" | Bloquea la sesión |
 | "Actualiza todo" / "Actualiza el sistema" | "Update everything" | Abre la terminal con la actualización del sistema |
+| "Limpia la caché de paquetes" | "Clean the package cache" | Abre la terminal con `yay -Sc` / `paccache -r` / `dnf clean packages` y `flatpak uninstall --unused` |
+| "Suspende / reinicia / apaga el equipo" | "Shut down the computer" | Pregunta siempre antes. Reiniciar y apagar cierran la sesión de KDE con orden |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
 Al pulsar el atajo suena un aviso y aparece "Escuchando…". Habla, y cuando te quedes en silencio 1 segundo se procesa la frase: la voz se detecta con **Silero VAD**, que la distingue de la música, y mientras escucha baja el volumen del sistema al 20 %. Si pulsas el atajo otra vez mientras escucha, corta la grabación; si lo pulsas mientras habla, se calla y vuelve a escuchar; si lo pulsas mientras procesa, avisa y te escucha al terminar.
@@ -84,7 +86,7 @@ Responde a "Hades", "Oye Hades" y "Hey Hades" (cámbialas con `variantes_activac
 
 El journal registra cada candidato (`activación: «…» filtro 0.92, confirmación 0.71 -> ACTIVA`) y los últimos 20 intentos se guardan en `grabaciones/activacion/` para ajustar el umbral con tu voz.
 
-Las acciones de la lista `confirmar` preguntan antes («¿Confirmas detener los contenedores?») y esperan un «sí» o «no».
+Las acciones de la lista `confirmar` preguntan antes («¿Confirmas detener los contenedores?») y esperan un «sí» o «no». Suspender, reiniciar y apagar el equipo preguntan siempre.
 
 ## Requisitos
 
@@ -155,6 +157,7 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `whisper_modelo` | `large-v3-turbo` | Modelo de faster-whisper (solo NVIDIA), p. ej. `medium` |
 | `whisper_precision` | `int8_float16` | Precisión en la GPU NVIDIA. `float16` ocupa el doble de VRAM |
 | `comando_actualizar` | se detecta | Comando de "actualiza todo", p. ej. `"yay -Syu; flatpak update"`. Sin definir: `yay`/`paru`/`pacman` en Arch o `dnf` en Fedora, más `flatpak update` |
+| `comando_limpiar` | se detecta | Comando de "limpia la caché de paquetes". Sin definir: `yay -Sc`/`paru -Sc`/`paccache -r`/`pacman -Sc` en Arch o `dnf clean packages` en Fedora, más `flatpak uninstall --unused` |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
 | `nombre` | `Nova` | Nombre del asistente en notificaciones y respuestas |
 | `palabra_activacion` | `""` | Frase que activa el asistente, p. ej. `"hades"`. `""` = solo atajo |

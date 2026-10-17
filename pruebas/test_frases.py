@@ -484,6 +484,47 @@ def probar_salvaguardas() -> tuple[int, int]:
          asistente.generar_imagen, asistente.liberar_vram_llm, asistente.lanzar, asistente.sonido,
          asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes, asistente.IMAGEN_OV, asistente.IMAGENES) = orig
 
+    # 13. Suspender / reiniciar / apagar y limpiar la caché
+    verificar("apagar/reiniciar/suspender se confirman aunque `confirmar` no los incluya",
+              "energia_equipo" in asistente.CONFIRMAR_SIEMPRE)
+    falta = [f"{lang}:{p}" for lang in asistente.MSG for p in asistente.ENERGIA_SYSTEMCTL
+             if f"confirmar_energia_equipo_{p}" not in asistente.MSG[lang] or f"energia_{p}" not in asistente.MSG[lang]]
+    verificar("cada opción de energía tiene su pregunta y su respuesta en es/en", not falta, falta)
+    acc, prm = asistente.validar_interpretacion("energia_equipo", "apagar", "reinicia el equipo", "Reinicia el equipo")
+    verificar("el verbo de la frase decide, no el parámetro del LLM", (acc, prm) == ("energia_equipo", "reiniciar"),
+              f"({acc!r}, {prm!r})")
+    acc, _ = asistente.validar_interpretacion("energia_equipo", "apagar", "apaga la musica", "Apaga la música")
+    verificar("«apaga la música» no apaga el equipo", acc == "no_entendido", acc)
+
+    llamadas = []
+
+    class _Resultado:
+        def __init__(self, rc):
+            self.returncode, self.stdout, self.stderr = rc, "", ""
+
+    orig = asistente.subprocess.run, asistente.lanzar, asistente.COMANDO_LIMPIAR
+    try:
+        asistente.subprocess.run = lambda cmd, **kw: (llamadas.append(cmd), _Resultado(0))[1]
+        asistente._ej_energia_equipo("apagar", "es", m_es)
+        verificar("apagar pide a KDE que cierre la sesión con orden",
+                  llamadas[-1][-1] == "logoutAndShutdown" and "org.kde.Shutdown" in llamadas[-1], llamadas[-1])
+        asistente.subprocess.run = lambda cmd, **kw: (llamadas.append(cmd), _Resultado(1))[1]
+        asistente._ej_energia_equipo("reiniciar", "es", m_es)
+        verificar("sin KDE, reiniciar usa systemctl", llamadas[-1] == ["systemctl", "reboot"], llamadas[-1])
+        asistente._ej_energia_equipo("suspender", "es", m_es)
+        verificar("suspender va directo a systemctl", llamadas[-1] == ["systemctl", "suspend"], llamadas[-1])
+        n = len(llamadas)
+        r = asistente._ej_energia_equipo("rm -rf", "es", m_es)
+        verificar("un parámetro desconocido no ejecuta nada", len(llamadas) == n and r == m_es["no_entendi"], r)
+
+        asistente.lanzar = llamadas.append
+        asistente.COMANDO_LIMPIAR = "echo limpio"
+        r = asistente._ej_limpiar_cache("", "es", m_es)
+        verificar("limpiar la caché abre la terminal con el comando de config.json",
+                  r == m_es["limpiando"] and "echo limpio" in llamadas[-1][-1], llamadas[-1])
+    finally:
+        asistente.subprocess.run, asistente.lanzar, asistente.COMANDO_LIMPIAR = orig
+
     # 12. Seguridad: textos que empiezan por «-», temporales, permisos y comandos de config.json
     import subprocess
     import tempfile

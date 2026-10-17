@@ -69,7 +69,7 @@ def _cargar_config():
 CFG = _cargar_config()
 CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps", "tareas", "confirmar",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
-              "whisper_precision", "comando_actualizar", "hablar", "nombre", "palabra_activacion",
+              "whisper_precision", "comando_actualizar", "comando_limpiar", "hablar", "nombre", "palabra_activacion",
               "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env", "clasificador",
               "umbral_clasificador", "modelo_redactar", "imagenes", "imagen_dispositivo", "fooocus",
               "carpeta_imagenes"}
@@ -125,10 +125,14 @@ IMAGEN_DISPOSITIVO = CFG.get("imagen_dispositivo", "CPU")
 CARPETA_IMAGENES = Path(CFG["carpeta_imagenes"]).expanduser() if CFG.get("carpeta_imagenes") else None
 # Comando para "actualiza todo". Por defecto se detecta: yay/paru/pacman (Arch) o dnf (Fedora), + flatpak
 COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
+# Comando para "limpia la caché de paquetes". Por defecto: yay/paru -Sc, paccache o pacman -Sc (Arch), dnf (Fedora)
+COMANDO_LIMPIAR = CFG.get("comando_limpiar")
 # Tareas de desarrollo permitidas (nombre -> comando que se ejecuta en la terminal)
 TAREAS = {k.strip(): v for k, v in CFG.get("tareas", {}).items() if isinstance(v, str) and v.strip()}
 # Acciones sensibles que piden confirmación por voz de 1 paso («¿Confirmas…?» -> «sí»)
 CONFIRMAR = set(CFG.get("confirmar", ["docker_detener", "docker_reiniciar"]))
+# Siempre se confirman, aunque `confirmar` no las incluya: cierran la sesión y lo que no esté guardado
+CONFIRMAR_SIEMPRE = {"energia_equipo"}
 APPS_TERMINAL = CFG.get("apps_terminal", ["htop", "btop", "top", "nvtop", "lazygit", "lazydocker", "k9s",
                                           "ranger", "yazi", "ncdu"])
 
@@ -244,6 +248,12 @@ MSG = {
         "perfil": "Perfil {x} activado.", "buscando": "Buscando {x}.",
         "actualizando": "Abriendo la terminal para actualizar. Escribe tu contraseña si te la pide.",
         "actualizar_no": "No sé cómo actualizar este sistema.", "actualizar_fin": "Listo. Pulsa Enter para cerrar.",
+        "limpiando": "Abriendo la terminal para limpiar la caché de paquetes.",
+        "limpiar_no": "No sé cómo limpiar la caché en este sistema.",
+        "confirmar_energia_equipo_suspender": "¿Confirmas suspender el equipo?",
+        "confirmar_energia_equipo_reiniciar": "¿Confirmas reiniciar el equipo? Se cerrarán las aplicaciones.",
+        "confirmar_energia_equipo_apagar": "¿Confirmas apagar el equipo? Se cerrarán las aplicaciones.",
+        "energia_suspender": "Suspendiendo.", "energia_reiniciar": "Reiniciando.", "energia_apagar": "Apagando.",
         "llm_error": "No pude conectar con el modelo de lenguaje.",
         "sin_llm": "No tengo un modelo de lenguaje configurado para eso.", "no_entendi": "No te entendí.",
         "fallo": "Algo falló al ejecutar el comando.", "pensando": "Pensando…",
@@ -314,6 +324,12 @@ MSG = {
         "perfil": "{x} profile enabled.", "buscando": "Searching for {x}.",
         "actualizando": "Opening a terminal to update. Type your password if asked.",
         "actualizar_no": "I don't know how to update this system.", "actualizar_fin": "Done. Press Enter to close.",
+        "limpiando": "Opening a terminal to clean the package cache.",
+        "limpiar_no": "I don't know how to clean the cache on this system.",
+        "confirmar_energia_equipo_suspender": "Do you confirm putting the computer to sleep?",
+        "confirmar_energia_equipo_reiniciar": "Do you confirm restarting the computer? Apps will be closed.",
+        "confirmar_energia_equipo_apagar": "Do you confirm shutting down the computer? Apps will be closed.",
+        "energia_suspender": "Going to sleep.", "energia_reiniciar": "Restarting.", "energia_apagar": "Shutting down.",
         "llm_error": "I couldn't connect to the language model.",
         "sin_llm": "I don't have a language model configured for that.", "no_entendi": "Sorry, I didn't understand.",
         "fallo": "Something went wrong running the command.", "pensando": "Thinking…",
@@ -794,7 +810,7 @@ def cmd_terminal(*args):
 
 
 def comando_en_terminal(cmd, m):
-    """Un comando de config.json (tareas, comando_actualizar) en una terminal visible. El comando es de confianza
+    """Un comando de config.json (tareas, comando_actualizar, comando_limpiar) en una terminal visible. El comando es de confianza
     (lo escribiste tú); el eco va entre comillas de shell para que unas comillas en él no rompan la línea."""
     return cmd_terminal("bash", "-c", f'echo {shlex.quote("$ " + cmd)}; {cmd}; echo; '
                                       f'read -rp {shlex.quote(m["actualizar_fin"])} _')
@@ -1372,6 +1388,20 @@ def comando_actualizar():
     return "; ".join(pasos) or None
 
 
+def comando_limpiar():
+    if COMANDO_LIMPIAR:
+        return COMANDO_LIMPIAR
+    pasos = []
+    # yay/paru -Sc limpian la caché de pacman y la de AUR (preguntan antes); paccache conserva 3 versiones
+    for cmd in ("yay -Sc", "paru -Sc", "sudo paccache -r", "sudo pacman -Sc", "sudo dnf clean packages"):
+        if shutil.which(cmd.removeprefix("sudo ").split()[0]):
+            pasos.append(cmd)
+            break
+    if shutil.which("flatpak"):
+        pasos.append("flatpak uninstall --unused")   # runtimes que ya no usa ninguna app
+    return "; ".join(pasos) or None
+
+
 # --- Ejecutores individuales por acción --------------------------------------------
 def _ej_abrir_app(param, _lang, m):
     app = resolver_app(param)
@@ -1549,6 +1579,32 @@ def _ej_actualizar_sistema(_param, _lang, m):
     return m["actualizando"]
 
 
+def _ej_limpiar_cache(_param, _lang, m):
+    cmd = comando_limpiar()
+    if not cmd:
+        return m["limpiar_no"]
+    lanzar(comando_en_terminal(cmd, m))
+    return m["limpiando"]
+
+
+# KDE cierra las apps con orden (y guarda la sesión) antes de reiniciar o apagar; systemctl es el respaldo
+ENERGIA_KDE = {"reiniciar": "logoutAndReboot", "apagar": "logoutAndShutdown"}
+ENERGIA_SYSTEMCTL = {"suspender": "suspend", "reiniciar": "reboot", "apagar": "poweroff"}
+
+
+def _ej_energia_equipo(param, _lang, m):
+    if param not in ENERGIA_SYSTEMCTL:
+        return m["no_entendi"]
+    metodo = ENERGIA_KDE.get(param)
+    if metodo:
+        r = subprocess.run(["busctl", "--user", "call", "org.kde.Shutdown", "/Shutdown", "org.kde.Shutdown", metodo],
+                           capture_output=True, timeout=10)
+        if r.returncode == 0:
+            return m[f"energia_{param}"]
+    subprocess.run(["systemctl", ENERGIA_SYSTEMCTL[param]], timeout=30)
+    return m[f"energia_{param}"]
+
+
 def _ej_pregunta(param, _lang, m):
     notificar(m["pensando"], param, "dialog-question")
     return llm(MODELO_PREGUNTAS, m["responde"], param).strip()
@@ -1711,6 +1767,15 @@ DOCUMENTOS = (r"(correo|email|e-?mail|mail|mensaje|carta|parrafo|texto|resumen|p
 PIDE_REDACTAR = (NO_ES_PREGUNTA + r"\W*(redacta\w*|componme|compon|escribeme|escribe|escribir|genera\w*|crea\w*|"
                  r"hazme|haz|draft|write|compose|generate|create)\b(\s+(me|nos|le|les))?\s+"
                  r"(un|una|unos|unas|el|la|a|an|the|some)\s+(\w+\s+)?" + DOCUMENTOS + r"\b")
+
+
+EQUIPO = r"(el |la |the |my |this )?(equipo|compu\w*|pc|ordenador|maquina|sistema|portatil|laptop|computer|machine|system)\b"
+# El parámetro sale de la frase, no del LLM: el verbo dicho decide si se suspende, reinicia o apaga
+VERBOS_ENERGIA = {
+    "suspender": r"\b(suspend\w*|hiberna\w*|a dormir|to sleep)\b",
+    "reiniciar": r"\b(reinicia\w*|restart\w*|reboot\w*)\b",
+    "apagar": r"\b(apaga\w*|shut\s*down|power\s*off|turn\s*off)\b",
+}
 
 
 class DefinicionAccion(NamedTuple):
@@ -2003,6 +2068,31 @@ REGISTRO_ACCIONES = [
         ejecutor=_ej_actualizar_sistema,
     ),
     DefinicionAccion(
+        nombre="limpiar_cache",
+        riesgo=True,
+        ejemplos=(("limpia la caché de paquetes", ""), ("libera espacio de la caché de pacman", ""),
+                  ("clean the package cache", "")),
+        prompt='borrar la caché de paquetes del sistema (clean package cache). parametro = ""',
+        evidencia=r"limpi|borra|libera|clean|clear|cache",
+        reglas=((r"\b(limpia\w*|borra\w*|vacia\w*|clean|clear)\b.*\b(cache|cach)\b.*\b(paquetes|pacman|yay|dnf|sistema|"
+                 r"packages|system)\b", ""),),
+        ejecutor=_ej_limpiar_cache,
+    ),
+    DefinicionAccion(
+        nombre="energia_equipo",
+        riesgo=True,   # además se confirma siempre (CONFIRMAR_SIEMPRE)
+        ejemplos=(("suspende el equipo", "suspender"), ("reinicia la computadora", "reiniciar"),
+                  ("apaga el equipo", "apagar"), ("shut down the computer", "apagar"),
+                  ("restart the pc", "reiniciar"), ("put the computer to sleep", "suspender")),
+        prompt="suspender, reiniciar o apagar el equipo completo (no una app ni un contenedor). "
+               "parametro = suspender | reiniciar | apagar",
+        evidencia=r"suspend|hiberna|dormir|sleep|reinici|restart|reboot|apaga|shut\s*down|power\s*off|turn\s*off",
+        reglas=tuple((rf"{verbo}\s+{EQUIPO}", p) for p, verbo in VERBOS_ENERGIA.items())
+              + ((r"^\W*suspend\w*\W*$", "suspender"), (r"^\W*reboot\W*$", "reiniciar"),
+                 (r"^\W*(shut\s*down|power\s*off)\W*$", "apagar")),
+        ejecutor=_ej_energia_equipo,
+    ),
+    DefinicionAccion(
         nombre="imagen",
         riesgo=True,   # descarga el LLM de la GPU y la ocupa más de un minuto
         ejemplos=(("genera una imagen de un perro en la playa", ""), ("dibújame un dragón", ""),
@@ -2035,7 +2125,7 @@ REGISTRO_ACCIONES = [
              # «¿Cómo escribo…?» en primera persona: es una pregunta, no una orden ni el portapapeles
              r"como (funciona|se|hago|puedo|debo|escribo|creo|instalo|configuro|uso|implemento|declaro|defino|"
              r"ordeno|convierto|conecto|despliego|soluciono|arreglo|evito|leo|obtengo|agrego|anado|elimino|borro|"
-             r"calculo|recorro|manejo|pruebo|depuro|optimizo)|"
+             r"calculo|recorro|manejo|pruebo|depuro|optimizo|apago|reinicio|suspendo|limpio)|"
              r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can|to|should|would)|"
              r"why|explain|difference between)\b", None),
         ),
@@ -2476,6 +2566,18 @@ def validar_interpretacion(accion, param, n, texto):
         accion, param = "no_entendido", ""
     if accion == "buscar_web":
         param = extraer_busqueda(texto) or param
+    if accion == "energia_equipo":
+        # Hay que nombrar el equipo («apaga la luz nocturna» no es apagar) salvo con «suspende» / «reboot» a secas
+        verbos = [p for p, v in VERBOS_ENERGIA.items() if re.search(v, n)]
+        if len(verbos) != 1 or not (re.search(EQUIPO, n) or re.match(r"^\W*(suspend\w*|reboot|shut\s*down|power\s*off)\W*$", n)):
+            log(f"descartado energia_equipo({param!r}): no dice qué hacer con el equipo")
+            return "no_entendido", ""
+        param = verbos[0]
+    # «Limpia la caché del navegador» no es la de paquetes: o lo dice, o no dice de qué
+    if accion == "limpiar_cache" and not re.search(r"\b(paquet\w*|pacman|yay|paru|dnf|flatpak|sistema|package\w*|system)\b", n) \
+            and not re.match(r"^\W*(limpia\w*|clean|clear)\s+(la |the )?(cache|cach)\W*$", n):
+        log(f"descartado limpiar_cache: no es la caché de paquetes")
+        return "no_entendido", ""
     if accion in ("imagen", "redactar"):     # la petición completa, no el resumen del LLM ni el del ejemplo
         param = texto
     # "¿Cómo actualizo un paquete de npm?" es una pregunta, no una orden de actualizar el sistema
@@ -2832,7 +2934,8 @@ class Asistente:
         t_llm = time.time() - t
         log(f"«{texto}» [{lang}] -> {accion}({param!r})  [voz {t_stt:.1f}s, intención {t_llm:.1f}s]")
 
-        pregunta_conf = MSG[lang].get(f"confirmar_{accion}") if accion in CONFIRMAR else None
+        pregunta_conf = (MSG[lang].get(f"confirmar_{accion}_{param}") or MSG[lang].get(f"confirmar_{accion}")
+                         if accion in CONFIRMAR | CONFIRMAR_SIEMPRE else None)
         if pregunta_conf:
             self.pendiente = (accion, param, lang, time.time() + 15.0)
             notificar(f"«{texto}»", pregunta_conf, "dialog-question", segundos=8)

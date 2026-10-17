@@ -599,8 +599,8 @@
   },
   {
     "frase": "Reinicia la computadora",
-    "accion": "no_entendido",
-    "param": ""
+    "accion": "energia_equipo",
+    "param": "reiniciar"
   },
   {
     "frase": "Reinicia spotify",
@@ -716,5 +716,68 @@
     "frase": "How to reverse a string in Python?",
     "accion": "pregunta",
     "param": "How to reverse a string in Python?"
+  },
+  {
+    "frase": "Apaga el equipo",
+    "accion": "energia_equipo",
+    "param": "apagar",
+    "idioma": "es"
+  },
+  {
+    "frase": "Suspende la computadora",
+    "accion": "energia_equipo",
+    "param": "suspender",
+    "idioma": "es"
+  },
+  {
+    "frase": "Suspende",
+    "accion": "energia_equipo",
+    "param": "suspender"
+  },
+  {
+    "frase": "Shut down the computer",
+    "accion": "energia_equipo",
+    "param": "apagar",
+    "idioma": "en"
+  },
+  {
+    "frase": "Restart my PC",
+    "accion": "energia_equipo",
+    "param": "reiniciar",
+    "idioma": "en"
+  },
+  {
+    "frase": "Apaga la luz nocturna",
+    "accion": "brillo",
+    "param": "luz_nocturna_off",
+    "idioma": "es"
+  },
+  {
+    "frase": "Reinicia spotify",
+    "accion": "no_entendido",
+    "param": ""
+  },
+  {
+    "frase": "¿Cómo apago el equipo desde la terminal?",
+    "accion": "pregunta",
+    "param": "¿Cómo apago el equipo desde la terminal?",
+    "idioma": "es"
+  },
+  {
+    "frase": "Limpia la caché de paquetes",
+    "accion": "limpiar_cache",
+    "param": "",
+    "idioma": "es"
+  },
+  {
+    "frase": "Clean the package cache",
+    "accion": "limpiar_cache",
+    "param": "",
+    "idioma": "en"
+  },
+  {
+    "frase": "Limpia la caché del navegador",
+    "accion": "no_entendido",
+    "param": ""
   }
 ]
