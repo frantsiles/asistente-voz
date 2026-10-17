@@ -71,7 +71,8 @@ CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
               "whisper_precision", "comando_actualizar", "hablar", "nombre", "palabra_activacion",
               "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env", "clasificador",
-              "umbral_clasificador", "modelo_redactar", "fooocus", "carpeta_imagenes"}
+              "umbral_clasificador", "modelo_redactar", "imagenes", "imagen_dispositivo", "fooocus",
+              "carpeta_imagenes"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
 WHISPER_MOTOR = CFG.get("whisper", "auto")
@@ -114,8 +115,13 @@ COMPOSE = Path(CFG["compose"]).expanduser() if CFG.get("compose") else None  # d
 
 # Terminal para las herramientas de consola y herramientas que se abren dentro de ella
 TERMINAL = CFG.get("terminal", "kitty")
-# Imágenes con el motor de Fooocus, en su propio entorno (torch no entra en el del asistente). null = desactivado
+# Motor de imágenes: "fooocus" (SDXL en su propio entorno, para GPU NVIDIA), "openvino" (LCM Dreamshaper con
+# el openvino-genai del asistente, ~20 s en CPU), "auto" (Fooocus si está instalado, si no OpenVINO) o null = desactivado
+IMAGENES = CFG.get("imagenes", "auto")
 FOOOCUS = Path(CFG.get("fooocus", "~/Fooocus")).expanduser() if CFG.get("fooocus", "~/Fooocus") else None
+IMAGEN_OV = BASE / "modelos/LCM_Dreamshaper_v7-int8-ov"
+# En la GPU integrada Intel (i915) la difusión colgó la GPU: CPU por defecto
+IMAGEN_DISPOSITIVO = CFG.get("imagen_dispositivo", "CPU")
 CARPETA_IMAGENES = Path(CFG["carpeta_imagenes"]).expanduser() if CFG.get("carpeta_imagenes") else None
 # Comando para "actualiza todo". Por defecto se detecta: yay/paru/pacman (Arch) o dnf (Fedora), + flatpak
 COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
@@ -217,9 +223,9 @@ MSG = {
         "redacta": "Escribe exactamente el texto que se pide, listo para pegar, en español salvo que pidan otro "
                    "idioma: sin introducción, sin comentarios al final y sin comillas alrededor. Si piden código, "
                    "devuelve solo el código, sin bloques de markdown.",
-        "imagen_no": "No encontré Fooocus para generar imágenes.",
+        "imagen_no": "No tengo cómo generar imágenes: falta Fooocus o el modelo de OpenVINO.",
         "imagen_ocupado": "Ya estoy generando una imagen, espera a que termine.",
-        "imagen_generando": "Generando la imagen. Tardará uno o dos minutos, te aviso cuando esté.",
+        "imagen_generando": "Generando la imagen, te aviso cuando esté.",
         "imagen_ok": "La imagen está lista.", "imagen_error": "No pude generar la imagen, revisa el registro.",
         "timer_ok": "Temporizador de {t} activado.", "timer_fin": "Temporizador finalizado: {x}",
         "timer_no": "No entendí la duración del temporizador.",
@@ -287,9 +293,9 @@ MSG = {
         "redacta": "Write exactly the requested text, ready to paste, in English unless another language is "
                    "requested: no introduction, no closing remarks and no surrounding quotes. If code is "
                    "requested, return only the code, without markdown blocks.",
-        "imagen_no": "I couldn't find Fooocus to generate images.",
+        "imagen_no": "I can't generate images: Fooocus or the OpenVINO model is missing.",
         "imagen_ocupado": "I'm already generating an image, please wait until it's done.",
-        "imagen_generando": "Generating the image. It will take a minute or two, I'll let you know when it's ready.",
+        "imagen_generando": "Generating the image, I'll let you know when it's ready.",
         "imagen_ok": "The image is ready.", "imagen_error": "I couldn't generate the image, check the log.",
         "timer_ok": "Timer set for {t}.", "timer_fin": "Timer finished: {x}",
         "timer_no": "I didn't understand the timer duration.",
@@ -349,8 +355,13 @@ def validar_config():
         avisos.append(f"llm desconocido ({LLM!r}): usa ollama, openai o ninguno")
     elif LLM != "ninguno" and not llm_local():
         avisos.append(f"el LLM está fuera de este equipo ({LLM_URL}): las frases y preguntas salen por la red")
-    if CFG.get("fooocus") and not (FOOOCUS / "venv/bin/python").is_file():
-        avisos.append(f"no encontré Fooocus con su entorno en {FOOOCUS} (fooocus): no podré generar imágenes")
+    if IMAGENES not in ("auto", "fooocus", "openvino", None):
+        avisos.append(f"motor de imágenes desconocido ({IMAGENES!r}): usa auto, fooocus, openvino o null")
+    elif IMAGENES == "fooocus" or (IMAGENES == "auto" and "fooocus" in CFG and not hay_openvino_imagen()):
+        if not hay_fooocus():
+            avisos.append(f"no encontré Fooocus con su entorno en {FOOOCUS} (fooocus): no podré generar imágenes")
+    elif IMAGENES == "openvino" and not hay_openvino_imagen():
+        avisos.append(f"falta el modelo de imágenes {IMAGEN_OV.name} u openvino-genai: ejecuta instalar.sh")
     if LLM_CLAVE and not llm_local() and urllib.parse.urlparse(LLM_URL).scheme != "https":
         avisos.append(f"la clave del LLM viajaría sin cifrar a {LLM_URL}: usa https")
     if CFG.get("llm_clave_env") and not LLM_CLAVE:
@@ -1555,13 +1566,31 @@ def _ej_redactar(param, _lang, m):
     return m["redactar_ok"]
 
 
-# --- Imágenes con Fooocus ----------------------------------------------------------
-PROMPT_IMAGEN = ("Convierte la petición en un prompt en inglés para Stable Diffusion XL: una sola línea con el sujeto, "
+# --- Imágenes: Fooocus u OpenVINO ---------------------------------------------------
+PROMPT_IMAGEN = ("Convierte la petición en un prompt en inglés para Stable Diffusion: una sola línea con el sujeto, "
                  "el estilo, la iluminación y la composición, separados por comas. Responde solo el prompt, sin comillas.")
 PEDIDO_IMAGEN = (r"^.*?\b(genera\w*|crea\w*|hazme|haz|dibuja\w*|pinta\w*|ilustra\w*|generate|create|make|draw|paint)\b"
                  r"(\s+(me|us))?\s*((un|una|el|la|a|an|the)\s+)?((imagen\w*|foto\w*|dibujo\w*|ilustracion\w*|image\w*|"
                  r"picture\w*|photo\w*|drawing|illustration|painting)\s+(de|del|con|of|with)\s+)?")
 _imagen_en_curso = threading.Lock()
+
+
+def hay_fooocus():
+    return bool(FOOOCUS) and (FOOOCUS / "venv/bin/python").is_file()
+
+
+def hay_openvino_imagen():
+    import importlib.util
+    return (IMAGEN_OV / "model_index.json").is_file() and importlib.util.find_spec("openvino_genai") is not None
+
+
+def motor_imagenes():
+    """"fooocus", "openvino" o None si no hay ninguno disponible."""
+    if IMAGENES in ("auto", "fooocus") and hay_fooocus():
+        return "fooocus"
+    if IMAGENES in ("auto", "openvino") and hay_openvino_imagen():
+        return "openvino"
+    return None
 
 
 def carpeta_imagenes():
@@ -1601,11 +1630,15 @@ def liberar_vram_llm():
             log(f"no se pudo descargar {modelo} de la GPU: {e}")
 
 
-def generar_imagen(prompt, salida):
-    """Lanza herramientas/imagen_fooocus.py con el Python de Fooocus. La petición va por stdin: el texto dictado
+def generar_imagen(prompt, salida, motor="fooocus"):
+    """Lanza herramientas/imagen_<motor>.py en un proceso aparte: Fooocus con su propio Python, OpenVINO con el
+    del asistente (así la RAM de la difusión se libera al terminar). La petición va por stdin: el texto dictado
     nunca llega a la línea de comandos. Devuelve la ruta del PNG o None."""
-    r = subprocess.run([str(FOOOCUS / "venv/bin/python"), "-I", str(BASE / "herramientas/imagen_fooocus.py"),
-                        str(FOOOCUS)], input=json.dumps({"prompt": prompt, "salida": str(salida)}),
+    if motor == "openvino":
+        cmd = [sys.executable, "-I", str(BASE / "herramientas/imagen_openvino.py"), str(IMAGEN_OV), IMAGEN_DISPOSITIVO]
+    else:
+        cmd = [str(FOOOCUS / "venv/bin/python"), "-I", str(BASE / "herramientas/imagen_fooocus.py"), str(FOOOCUS)]
+    r = subprocess.run(cmd, input=json.dumps({"prompt": prompt, "salida": str(salida)}),
                        capture_output=True, text=True, timeout=900)
     try:   # Fooocus también escribe en stdout: el resultado es la última línea
         resultado = json.loads(r.stdout.strip().splitlines()[-1])
@@ -1618,8 +1651,10 @@ def generar_imagen(prompt, salida):
 
 
 def _ej_imagen(param, lang, m):
-    if not FOOOCUS or not (FOOOCUS / "venv/bin/python").is_file():
+    motor = motor_imagenes()
+    if not motor:
         return m["imagen_no"]
+    usa_gpu = motor == "fooocus" or IMAGEN_DISPOSITIVO != "CPU"   # en CPU no hace falta sacar el LLM de la GPU
     if not _imagen_en_curso.acquire(blocking=False):
         return m["imagen_ocupado"]
     try:
@@ -1627,15 +1662,16 @@ def _ej_imagen(param, lang, m):
     except BaseException:
         _imagen_en_curso.release()
         raise
-    log(f"imagen: {prompt!r}")
+    log(f"imagen ({motor}): {prompt!r}")
 
-    def en_segundo_plano():                  # ~1,5 min: mientras, el asistente sigue atendiendo
+    def en_segundo_plano():                  # 20 s-1,5 min: mientras, el asistente sigue atendiendo
         try:
             carpeta = carpeta_imagenes()
             carpeta.mkdir(parents=True, exist_ok=True)
-            liberar_vram_llm()
+            if usa_gpu:
+                liberar_vram_llm()
             t = time.time()
-            ruta = generar_imagen(prompt, carpeta / time.strftime("%Y%m%d-%H%M%S.png"))
+            ruta = generar_imagen(prompt, carpeta / time.strftime("%Y%m%d-%H%M%S.png"), motor)
         except Exception as e:
             log(f"error generando la imagen: {e}")
             ruta = None
@@ -1649,7 +1685,7 @@ def _ej_imagen(param, lang, m):
         notificar("🖼", msg if not ruta else f"{msg}\n{ruta}", ruta or "dialog-warning", segundos=10)
         if _voz_activa and not _voz_activa.hablando:
             _voz_activa.decir(msg, lang)
-        if LLM == "ollama":                  # vuelve a cargar el modelo de comandos para el siguiente
+        if usa_gpu and LLM == "ollama":      # vuelve a cargar el modelo de comandos para el siguiente
             try:
                 llm(MODELO_COMANDOS, "Responde ok.", "ok")
             except Exception as e:

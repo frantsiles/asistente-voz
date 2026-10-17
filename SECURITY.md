@@ -18,7 +18,7 @@ Corre como **tu usuario**, sin `sudo`, en tu sesión gráfica. Puede hacer lo mi
 | La transcripción de Whisper | Texto que empiece por `-` y se tome como opción de un comando | Nunca pasa por un shell. `notify-send` y `busctl` reciben `--` antes del texto, `kdeconnect-cli` lo recibe como `--share-text=…` y a las búsquedas se les quitan los guiones iniciales |
 | La respuesta del LLM | Que «invente» un comando o una ruta | Solo elige un nombre de la lista blanca de acciones (esquema JSON). Sus parámetros se validan contra lo que existe: apps instaladas, proyectos, contenedores, tareas, atajos de KWin |
 | El portapapeles (resumir, traducir, explicar) | Texto copiado con instrucciones («ignora lo anterior y…») | Lo que responde el LLM solo se lee en voz alta o se copia al portapapeles: nunca se interpreta como orden |
-| La petición de una imagen | Inyección en la línea de comandos de Fooocus | El texto va por stdin en JSON, nunca como argumento |
+| La petición de una imagen | Inyección en la línea de comandos de Fooocus u OpenVINO | El texto va por stdin en JSON, nunca como argumento |
 
 **Fuera del alcance**: alguien que ya puede ejecutar código como tu usuario (podría editar `config.json` o el propio `asistente.py`), y los modelos o paquetes comprometidos en su origen, más allá de lo que fijan los hashes y commits de abajo.
 
@@ -29,7 +29,7 @@ Corre como **tu usuario**, sin `sudo`, en tu sesión gráfica. Puede hacer lo mi
 3. **Confirmación por voz** para lo que no se puede deshacer (`confirmar` en `config.json`; por defecto detener y reiniciar contenedores).
 4. **Sin shell con texto dictado.** Los comandos son listas de argumentos. Los únicos `bash -c` llevan rutas con `shlex.quote()` o comandos que escribiste tú en `config.json` (`tareas`, `comando_actualizar`), en una terminal visible.
 5. **Contraseñas fuera.** `sudo` pide la contraseña en una terminal visible; el asistente nunca la ve. «Lee lo que copié» no lee nada que parezca una contraseña o un token (`parece_secreto()`). La clave de un LLM remoto se lee de una variable de entorno, nunca de `config.json`, y si viajaría sin cifrar (`http://` fuera del equipo) se avisa al arrancar.
-6. **Todo local.** Whisper, el LLM, Piper, el clasificador y Fooocus corren en tu equipo. Si `llm_url` apunta fuera, se avisa al arrancar.
+6. **Todo local.** Whisper, el LLM, Piper, el clasificador y el generador de imágenes (Fooocus u OpenVINO) corren en tu equipo. Si `llm_url` apunta fuera, se avisa al arrancar.
 7. **Archivos privados.** Los temporales (WAV, script de KWin) van en `XDG_RUNTIME_DIR`, que solo es tuyo; sin esa variable, en una carpeta nueva creada con `mkdtemp` (0700), nunca en `/tmp` a secas. Las grabaciones de tu voz (las 10 últimas, para diagnosticar) quedan en `grabaciones/` con permisos 0700 y nunca se suben al repositorio.
 8. **Dependencias fijadas.** `instalar.sh` instala desde `requirements-*.lock` con `pip --require-hashes`: si un paquete de PyPI cambia, no se instala. Los modelos de Hugging Face se descargan de un commit fijo y Silero VAD se comprueba con su SHA-256.
 9. **Repositorio protegido.** `main` no admite force-push ni borrado, el escaneo de secretos bloquea los pushes con tokens, Dependabot avisa de dependencias vulnerables y cada push pasa las pruebas en GitHub Actions (acciones fijadas por commit, sin credenciales).

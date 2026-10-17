@@ -76,8 +76,9 @@ echo "    $PY ($("$PY" --version))"
 # Versiones y hashes fijos (requirements-*.lock): si un paquete de PyPI cambia, pip se niega a instalarlo
 "$DIR/venv/bin/pip" install -q --require-hashes -r "$DIR/requirements-$MOTOR.lock"
 
-echo "==> Modelos (Whisper ~800 MB-1,6 GB + voces ~200 MB + clasificador ~113 MB)"
+echo "==> Modelos (Whisper ~800 MB-1,6 GB + voces ~200 MB + clasificador ~113 MB; con Intel, imágenes ~2,3 GB)"
 "$DIR/venv/bin/python" -I - "$DIR/modelos" "$MOTOR" "${WHISPER_MODELO:-large-v3-turbo}" <<'EOF'
+import os
 import sys
 from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -91,6 +92,7 @@ REVISION = {
     "OpenVINO/whisper-base-int8-ov": "0606293f0511136ada21755a265492f623a934b8",
     "rhasspy/piper-voices": "c10ece1aade47bb51c153c893d14e5bf8e5b7117",
     "Xenova/multilingual-e5-small": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+    "OpenVINO/LCM_Dreamshaper_v7-int8-ov": "340a03e5488f36f7f222e6efa29819850ad7e4be",
 }
 if motor == "nvidia":
     from faster_whisper import download_model
@@ -102,6 +104,10 @@ else:
     for m in ["whisper-medium-int8-ov", "whisper-base-int8-ov"]:   # comandos / palabra de activación
         if not (dst / m).exists():
             snapshot_download("OpenVINO/" + m, local_dir=dst / m, revision=REVISION["OpenVINO/" + m])
+    # Imágenes sin Fooocus: LCM Dreamshaper v7 int8 (~2,3 GB, ~20 s por imagen en CPU). IMAGENES=no lo omite
+    m = "LCM_Dreamshaper_v7-int8-ov"
+    if os.environ.get("IMAGENES", "si") != "no" and not (dst / m / "model_index.json").exists():
+        snapshot_download("OpenVINO/" + m, local_dir=dst / m, revision=REVISION["OpenVINO/" + m])
 for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medium/en_US-lessac-medium.onnx"]:
     for ext in ["", ".json"]:
         if not (dst / "voces" / (voz + ext)).exists():

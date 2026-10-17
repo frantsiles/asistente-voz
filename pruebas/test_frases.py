@@ -402,7 +402,7 @@ def probar_salvaguardas() -> tuple[int, int]:
 
     orig = (asistente.llm, asistente.klipper_escribir, asistente.notificar, asistente.subprocess.run,
             asistente.generar_imagen, asistente.liberar_vram_llm, asistente.lanzar, asistente.sonido,
-            asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes)
+            asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes, asistente.IMAGEN_OV, asistente.IMAGENES)
     try:
         portapapeles = []
         asistente.notificar = lambda *_a, **_kw: None
@@ -412,8 +412,8 @@ def probar_salvaguardas() -> tuple[int, int]:
         verificar("redactar deja solo el código en el portapapeles, sin el bloque de markdown",
                   portapapeles == ["print(sorted(xs))"] and r == m_es["redactar_ok"], f"{portapapeles!r} {r!r}")
 
-        asistente.FOOOCUS = None
-        verificar("imagen sin Fooocus avisa", asistente._ej_imagen("dibuja un gato", "es", m_es) == m_es["imagen_no"])
+        asistente.FOOOCUS, asistente.IMAGEN_OV = None, asistente.Path("/no/existe")
+        verificar("imagen sin Fooocus ni OpenVINO avisa", asistente._ej_imagen("dibuja un gato", "es", m_es) == m_es["imagen_no"])
 
         # La petición va a Fooocus por stdin, nunca en la línea de comandos
         asistente.FOOOCUS = asistente.Path("/opt/fooocus")
@@ -431,7 +431,28 @@ def probar_salvaguardas() -> tuple[int, int]:
         verificar("generar_imagen manda el prompt por stdin y lee la última línea",
                   ruta == "/x/img.png" and "rm -rf" not in " ".join(llamada["cmd"])
                   and json.loads(llamada["input"])["prompt"] == "a cat; rm -rf ~", f"{ruta!r} {llamada!r}")
+        # OpenVINO: con el Python del asistente y el dispositivo configurado, también por stdin
+        ruta = asistente.generar_imagen("a cat; rm -rf ~", asistente.Path("/x/img.png"), "openvino")
+        verificar("generar_imagen con OpenVINO usa imagen_openvino.py y el prompt por stdin",
+                  ruta == "/x/img.png" and llamada["cmd"][0] == asistente.sys.executable
+                  and llamada["cmd"][2].endswith("imagen_openvino.py") and "rm -rf" not in " ".join(llamada["cmd"]),
+                  repr(llamada))
         asistente.subprocess.run = orig[3]
+
+        # auto: Fooocus si está instalado; si no, OpenVINO con su modelo; null lo desactiva
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            (asistente.Path(tmp) / "ov").mkdir()
+            (asistente.Path(tmp) / "ov/model_index.json").touch()
+            asistente.FOOOCUS, asistente.IMAGEN_OV = asistente.Path(tmp) / "nada", asistente.Path(tmp) / "ov"
+            motores = [asistente.motor_imagenes()]
+            asistente.IMAGENES = "fooocus"
+            motores.append(asistente.motor_imagenes())
+            asistente.IMAGENES = None
+            motores.append(asistente.motor_imagenes())
+            asistente.IMAGENES = orig[12]
+        verificar("motor de imágenes: auto usa OpenVINO sin Fooocus; fooocus y null no", motores == ["openvino", None, None],
+                  repr(motores))
 
         asistente.LLM = "ninguno"
         p = asistente.prompt_imagen("Genera una imagen de un zorro en la nieve")
@@ -450,7 +471,7 @@ def probar_salvaguardas() -> tuple[int, int]:
             asistente.llm = lambda *_a, **_kw: "a red fox sleeping in the snow"
             asistente.liberar_vram_llm = lambda: None
             asistente.lanzar = asistente.sonido = lambda *_a, **_kw: None
-            asistente.generar_imagen = lambda prompt, salida: (prompts.append(prompt), soltar.wait(5), None)[2]
+            asistente.generar_imagen = lambda prompt, salida, *_m: (prompts.append(prompt), soltar.wait(5), None)[2]
             r1 = asistente._ej_imagen("Genera un zorro", "es", m_es)
             r2 = asistente._ej_imagen("Genera otro", "es", m_es)
             soltar.set()
@@ -462,7 +483,7 @@ def probar_salvaguardas() -> tuple[int, int]:
     finally:
         (asistente.llm, asistente.klipper_escribir, asistente.notificar, asistente.subprocess.run,
          asistente.generar_imagen, asistente.liberar_vram_llm, asistente.lanzar, asistente.sonido,
-         asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes) = orig
+         asistente.FOOOCUS, asistente.LLM, asistente.carpeta_imagenes, asistente.IMAGEN_OV, asistente.IMAGENES) = orig
 
     # 12. Seguridad: textos que empiezan por «-», temporales, permisos y comandos de config.json
     import subprocess

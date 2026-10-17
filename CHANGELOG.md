@@ -5,6 +5,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 ## Sin publicar
 
 ### Añadido
+- **Imágenes con OpenVINO** para equipos sin GPU NVIDIA: LCM Dreamshaper v7 int8 con `openvino-genai`, ~20 s por imagen de 512×512 en CPU, sin torch ni Pillow (`herramientas/imagen_openvino.py`). `imagenes` (`auto`, `fooocus`, `openvino`, `null`) e `imagen_dispositivo` en `config.json`; `instalar.sh` descarga el modelo en equipos Intel. En la GPU Arc integrada colgaba la GPU, por eso usa la CPU por defecto.
 - **Redactar** («Redacta un correo para…», «Escríbeme una función que…»): el LLM escribe el texto o el código y lo deja en el portapapeles, sin bloques de markdown. `modelo_redactar` en `config.json`. «Escribe hola mundo» sigue siendo dictado.
 - **Imágenes con Fooocus** («Genera una imagen de…», «Dibújame…»): el LLM escribe el prompt en inglés, se descarga Ollama de la GPU y `herramientas/imagen_fooocus.py` genera con el Python de Fooocus, en segundo plano (~1–1,5 min en una RTX 2060). La petición va por stdin, nunca por la línea de comandos. `fooocus` y `carpeta_imagenes` en `config.json`.
 - **Intérprete por capas**: reglas → **clasificador por embeddings** (multilingual-e5-small, ONNX int8, ~3 ms en CPU) → LLM solo si el clasificador duda. Con 36 frases que las reglas no cubren: de 6/20 órdenes y 5,5 s a 17/19 y 3 ms de mediana, rechazando 16/16 frases de charla real de reuniones. Ejemplos por acción en el registro (`ejemplos`) y de charla (`EJEMPLOS_CHARLA`). `clasificador` y `umbral_clasificador` en `config.json`.

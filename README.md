@@ -49,7 +49,7 @@ flowchart LR
 | "Lee / resume / traduce lo que copié" | "Summarize the clipboard" | Portapapeles de Klipper + LLM (no lee contraseñas en voz alta) |
 | "Escribe hola mundo" | "Type hello world" | Copia el texto dictado al portapapeles para pegarlo con Ctrl+V |
 | "Redacta un correo para mi jefe pidiendo el viernes libre" / "Escríbeme una función en Python que…" | "Write an email to the team about…" | El LLM lo escribe y lo deja en el portapapeles (Ctrl+V) |
-| "Genera una imagen de un zorro en la nieve" / "Dibújame un gato astronauta" | "Draw a robot playing guitar" | Imagen con [Fooocus](#imágenes-con-fooocus) (~1–1,5 min, en segundo plano); se abre al terminar |
+| "Genera una imagen de un zorro en la nieve" / "Dibújame un gato astronauta" | "Draw a robot playing guitar" | [Imagen](#imágenes) con Fooocus u OpenVINO, en segundo plano; se abre al terminar |
 | "¿Dónde está mi teléfono?" / "Batería del teléfono" | "Ring my phone" | KDE Connect |
 | "¿Cómo está la compu?" / "Estado de la batería" | "How is the computer doing?" | Temperatura de CPU y GPU, RAM, disco, batería, red y perfil de energía |
 | "¿Qué proceso usa más CPU?" / "¿Qué corre en el puerto 5000?" / "¿Hay actualizaciones?" | "Open ports" | Diagnóstico rápido del sistema |
@@ -146,7 +146,9 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `modelo_comandos` | `llama3.2` | Modelo que interpreta los comandos dudosos. Recomendado: `gemma4:e2b` |
 | `modelo_preguntas` | `llama3.2` | Modelo que responde preguntas. Uno más grande responde mejor, pero tarda más |
 | `modelo_redactar` | el de preguntas | Modelo que redacta textos y código, p. ej. `qwen2.5-coder:7b` si sobre todo pides código |
-| `fooocus` | `~/Fooocus` | Carpeta de Fooocus (con su `venv`) para generar imágenes. `null` = desactivado |
+| `imagenes` | `auto` | Motor de imágenes: `fooocus`, `openvino`, `auto` (Fooocus si está instalado, si no OpenVINO) o `null` = desactivado |
+| `imagen_dispositivo` | `CPU` | Dispositivo de OpenVINO para las imágenes. `GPU` colgó la Arc integrada (ver abajo) |
+| `fooocus` | `~/Fooocus` | Carpeta de Fooocus (con su `venv`) |
 | `carpeta_imagenes` | tu carpeta de imágenes + `/<nombre>` | Dónde se guardan las imágenes generadas |
 | `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
 | `idiomas` | `["es", "en"]` | Idiomas que puede detectar Whisper (solo NVIDIA). Evita que el ruido se transcriba como árabe u otros idiomas |
@@ -215,17 +217,23 @@ systemctl --user restart asistente-voz
 | Preguntas | ~5–8 s | ~2 s |
 | Voz (Piper) | ~0,3 s | |
 | Redactar un correo o una función (llama3.2) | | ~1–2 s |
-| Imagen 1024×1024 (Fooocus, SDXL, 30 pasos) | | ~60–90 s |
+| Imagen | ~20 s, 512×512 (OpenVINO, LCM, 4 pasos, CPU) | ~60–90 s, 1024×1024 (Fooocus, SDXL, 30 pasos) |
 
-## Imágenes con Fooocus
+## Imágenes
 
-«Genera una imagen de…» usa el motor de [Fooocus](https://github.com/lllyasviel/Fooocus) sin abrir su interfaz web. Necesitas Fooocus instalado en `~/Fooocus` (o en la carpeta de `fooocus`) con su entorno `venv` y su modelo por defecto descargado: basta con haberlo abierto una vez. El asistente no instala torch en su propio entorno: `herramientas/imagen_fooocus.py` se ejecuta con el Python de Fooocus.
+«Genera una imagen de…» tiene dos motores; con `"imagenes": "auto"` se usa Fooocus si está instalado y, si no, OpenVINO.
+
+**OpenVINO** (equipos sin GPU NVIDIA): [LCM Dreamshaper v7](https://huggingface.co/OpenVINO/LCM_Dreamshaper_v7-int8-ov) en int8 con el `openvino-genai` que el asistente ya tiene, sin torch ni Pillow. `instalar.sh` descarga el modelo (~2,3 GB) en equipos Intel; `IMAGENES=no ./instalar.sh` lo omite. Genera 512×512 en 4 pasos en ~20 s en la CPU. Corre en un proceso aparte (`herramientas/imagen_openvino.py`) porque usa ~7 GB de RAM mientras genera y así se liberan al terminar.
+
+En la GPU Arc integrada (driver i915) la difusión **colgó la GPU** (`CL_OUT_OF_RESOURCES` y el kernel reinició el contexto), por eso `imagen_dispositivo` es `CPU` por defecto.
+
+**Fooocus** (GPU NVIDIA): usa el motor de [Fooocus](https://github.com/lllyasviel/Fooocus) sin abrir su interfaz web. Necesitas Fooocus instalado en `~/Fooocus` (o en la carpeta de `fooocus`) con su entorno `venv` y su modelo por defecto descargado: basta con haberlo abierto una vez. El asistente no instala torch en su propio entorno: `herramientas/imagen_fooocus.py` se ejecuta con el Python de Fooocus.
 
 1. El LLM convierte la petición en un prompt en inglés (SDXL entiende poco español). Sin LLM se usa la descripción tal cual.
 2. Se descargan de la GPU los modelos de Ollama: SDXL necesita casi toda la VRAM de una gráfica de 6 GB. Whisper se queda cargado.
 3. Fooocus genera la imagen en segundo plano; mientras, el asistente sigue atendiendo. Al terminar avisa, abre la imagen y vuelve a cargar el modelo de comandos.
 
-Solo genera una imagen a la vez. Con una GPU Intel o sin GPU, Fooocus funciona pero tarda muchos minutos.
+Solo genera una imagen a la vez. Sin GPU NVIDIA, Fooocus tarda muchos minutos: usa OpenVINO.
 
 ## Solución de problemas
 
@@ -283,7 +291,7 @@ wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
 
 ```
 asistente.py            # el asistente (configuración, reglas, acciones)
-herramientas/           # imagen_fooocus.py: genera imágenes con el Python de Fooocus
+herramientas/           # imagen_fooocus.py / imagen_openvino.py: generan las imágenes en un proceso aparte
 config.example.json     # plantilla de configuración
 TODO.md                 # ideas y próximos ajustes
 CHANGELOG.md            # cambios por fecha
