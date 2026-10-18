@@ -50,6 +50,7 @@ flowchart LR
 | "Escribe hola mundo" | "Type hello world" | Copia el texto dictado al portapapeles para pegarlo con Ctrl+V |
 | "Redacta un correo para mi jefe pidiendo el viernes libre" / "Escríbeme una función en Python que…" | "Write an email to the team about…" | El LLM lo escribe y lo deja en el portapapeles (Ctrl+V) |
 | "Genera una imagen de un zorro en la nieve" / "Dibújame un gato astronauta" | "Draw a robot playing guitar" | [Imagen](#imágenes) con Fooocus u OpenVINO, en segundo plano; se abre al terminar |
+| "Mejora esta imagen" / "Hazle superresolución a la imagen" / "Mejora la imagen del portapapeles" | "Upscale this image" / "Enhance the clipboard image" | Superresolución IA x4 a la imagen seleccionada en el explorador o copiada en el portapapeles |
 | "¿Dónde está mi teléfono?" / "Batería del teléfono" | "Ring my phone" | KDE Connect |
 | "¿Cómo está la compu?" / "Estado de la batería" | "How is the computer doing?" | Temperatura de CPU y GPU, RAM, disco, batería, red y perfil de energía |
 | "¿Qué proceso usa más CPU?" / "¿Qué corre en el puerto 5000?" / "¿Hay actualizaciones?" | "Open ports" | Diagnóstico rápido del sistema |
@@ -150,6 +151,7 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `modelo_redactar` | el de preguntas | Modelo que redacta textos y código, p. ej. `qwen2.5-coder:7b` si sobre todo pides código |
 | `imagenes` | `auto` | Motor de imágenes: `fooocus`, `openvino`, `auto` (Fooocus si está instalado, si no OpenVINO) o `null` = desactivado |
 | `imagen_dispositivo` | `CPU` | Dispositivo de OpenVINO para las imágenes. `GPU` colgó la Arc integrada (ver abajo) |
+| `imagen_escalar` | `realesrgan` | Superresolución x4 (`512×512` → `2048×2048`) en OpenVINO: `realesrgan` (recomendado), `openvino`, `realesrgan_x4plus` o `null` = sin escalar |
 | `fooocus` | `~/Fooocus` | Carpeta de Fooocus (con su `venv`) |
 | `carpeta_imagenes` | tu carpeta de imágenes + `/<nombre>` | Dónde se guardan las imágenes generadas |
 | `whisper` | `auto` | Motor de voz a texto: `auto`, `openvino` (Intel/CPU) o `cuda` (NVIDIA) |
@@ -220,13 +222,24 @@ systemctl --user restart asistente-voz
 | Preguntas | ~5–8 s | ~2 s |
 | Voz (Piper) | ~0,3 s | |
 | Redactar un correo o una función (llama3.2) | | ~1–2 s |
-| Imagen | ~20 s, 512×512 (OpenVINO, LCM, 4 pasos, CPU) | ~60–90 s, 1024×1024 (Fooocus, SDXL, 30 pasos) |
+| Imagen | ~21,5 s, 2048×2048 (OpenVINO, LCM 512×512 + Real-ESRGAN x4, CPU) | ~60–90 s, 1024×1024 (Fooocus, SDXL, 30 pasos) |
 
 ## Imágenes
 
 «Genera una imagen de…» tiene dos motores; con `"imagenes": "auto"` se usa Fooocus si está instalado y, si no, OpenVINO.
 
-**OpenVINO** (equipos sin GPU NVIDIA): [LCM Dreamshaper v7](https://huggingface.co/OpenVINO/LCM_Dreamshaper_v7-int8-ov) en int8 con el `openvino-genai` que el asistente ya tiene, sin torch ni Pillow. `instalar.sh` descarga el modelo (~2,3 GB) en equipos Intel; `IMAGENES=no ./instalar.sh` lo omite. Genera 512×512 en 4 pasos en ~20 s en la CPU. Corre en un proceso aparte (`herramientas/imagen_openvino.py`) porque usa ~7 GB de RAM mientras genera y así se liberan al terminar.
+**OpenVINO** (equipos sin GPU NVIDIA): [LCM Dreamshaper v7](https://huggingface.co/OpenVINO/LCM_Dreamshaper_v7-int8-ov) en int8 con el `openvino-genai` que el asistente ya tiene, sin torch ni Pillow. `instalar.sh` descarga el modelo (~2,3 GB) en equipos Intel; `IMAGENES=no ./instalar.sh` lo omite. Genera a **512×512 en 4 pasos (~20 s en CPU)** y después aplica **superresolución IA x4 hasta 2048×2048** (al estilo de DLSS/FSR/XeSS: genera rápido en resolución base y reconstruye bordes y nitidez al final). Corre en un proceso aparte (`herramientas/imagen_openvino.py`) porque usa ~7 GB de RAM mientras genera y así se liberan al terminar.
+
+Puedes elegir el motor de superresolución con `"imagen_escalar"` en `config.json`:
+
+| `imagen_escalar` | Modelo | Tamaño | Tiempo (CPU) | Resultado en imágenes de difusión |
+|---|---|---|---|---|
+| `"realesrgan"` *(por defecto, recomendado)* | `realesr-general-x4v3.onnx` (Real-ESRGAN Compact, SRVGGNetCompact) | 4,6 MB | ~1,5 s | **El más limpio**: elimina el grano de la difusión y reconstruye trazos y bordes nítidos |
+| `"openvino"` | `single-image-super-resolution-1032` (Intel Open Model Zoo) | 150 KB | ~0,8 s | Muy ligero; realza bordes sobre una base bilineal, pero conserva más ruido del píxel original |
+| `"realesrgan_x4plus"` | `RealESRGAN_x4plus.fp16.onnx` (RRDB completo, 23 bloques) | 33,6 MB | ~26 s | Pensado para fotografía real; añade textura fina tipo grano/papel pero tarda mucho más |
+| `null` / `"ninguno"` | — | — | 0 s | Sin escalado: guarda la imagen original de `512×512` |
+
+También puedes aplicar superresolución x4 a **cualquier imagen existente** diciendo *«Mejora esta imagen»*, *«Hazle superresolución a la imagen»* o *«Mejora la imagen del portapapeles»*: toma la imagen seleccionada en el explorador de archivos (Nautilus o Dolphin) o copiada en el portapapeles (como archivo o como captura/imagen), guarda `<nombre>-x4.png` junto al original (o en tu carpeta de imágenes si venía del portapapeles) y la abre al terminar.
 
 En la GPU Arc integrada (driver i915) la difusión **colgó la GPU** (`CL_OUT_OF_RESOURCES` y el kernel reinició el contexto), por eso `imagen_dispositivo` es `CPU` por defecto.
 

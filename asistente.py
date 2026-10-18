@@ -71,7 +71,7 @@ CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
               "whisper_precision", "comando_actualizar", "comando_limpiar", "hablar", "nombre", "palabra_activacion",
               "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env", "clasificador",
-              "umbral_clasificador", "modelo_redactar", "imagenes", "imagen_dispositivo", "fooocus",
+              "umbral_clasificador", "modelo_redactar", "imagenes", "imagen_dispositivo", "imagen_escalar", "fooocus",
               "carpeta_imagenes"}
 
 # Motor de Whisper: "openvino" (GPU/NPU Intel o CPU), "cuda" (faster-whisper en GPU NVIDIA) o "auto"
@@ -122,6 +122,9 @@ FOOOCUS = Path(CFG.get("fooocus", "~/Fooocus")).expanduser() if CFG.get("fooocus
 IMAGEN_OV = BASE / "modelos/LCM_Dreamshaper_v7-int8-ov"
 # En la GPU integrada Intel (i915) la difusión colgó la GPU: CPU por defecto
 IMAGEN_DISPOSITIVO = CFG.get("imagen_dispositivo", "CPU")
+# Superresolución x4 (512×512 -> 2048×2048) en OpenVINO: "realesrgan" (recomendado, ~1,5 s),
+# "openvino" (Intel OMZ, ~0,8 s), "realesrgan_x4plus" (RRDB completo, ~26 s) o null = sin escalar (512×512)
+IMAGEN_ESCALAR = CFG.get("imagen_escalar", "realesrgan")
 CARPETA_IMAGENES = Path(CFG["carpeta_imagenes"]).expanduser() if CFG.get("carpeta_imagenes") else None
 # Comando para "actualiza todo". Por defecto se detecta: yay/paru/pacman (Arch) o dnf (Fedora), + flatpak
 COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
@@ -231,6 +234,10 @@ MSG = {
         "imagen_ocupado": "Ya estoy generando una imagen, espera a que termine.",
         "imagen_generando": "Generando la imagen, te aviso cuando esté.",
         "imagen_ok": "La imagen está lista.", "imagen_error": "No pude generar la imagen, revisa el registro.",
+        "sr_sin_imagen": "No encontré ninguna imagen seleccionada ni en el portapapeles.",
+        "sr_sin_modelo": "Falta el modelo de superresolución en la carpeta de modelos.",
+        "sr_escalando": "Aplicando superresolución a la imagen, te aviso cuando esté.",
+        "sr_ok": "La imagen mejorada está lista.",
         "timer_ok": "Temporizador de {t} activado.", "timer_fin": "Temporizador finalizado: {x}",
         "timer_no": "No entendí la duración del temporizador.",
         "tel_no": "El teléfono no está conectado.",
@@ -307,6 +314,10 @@ MSG = {
         "imagen_ocupado": "I'm already generating an image, please wait until it's done.",
         "imagen_generando": "Generating the image, I'll let you know when it's ready.",
         "imagen_ok": "The image is ready.", "imagen_error": "I couldn't generate the image, check the log.",
+        "sr_sin_imagen": "I couldn't find any selected image or image in the clipboard.",
+        "sr_sin_modelo": "The super-resolution model is missing in the models folder.",
+        "sr_escalando": "Upscaling the image, I'll let you know when it's ready.",
+        "sr_ok": "The upscaled image is ready.",
         "timer_ok": "Timer set for {t}.", "timer_fin": "Timer finished: {x}",
         "timer_no": "I didn't understand the timer duration.",
         "tel_no": "The phone is not connected.",
@@ -378,6 +389,8 @@ def validar_config():
             avisos.append(f"no encontré Fooocus con su entorno en {FOOOCUS} (fooocus): no podré generar imágenes")
     elif IMAGENES == "openvino" and not hay_openvino_imagen():
         avisos.append(f"falta el modelo de imágenes {IMAGEN_OV.name} u openvino-genai: ejecuta instalar.sh")
+    if IMAGEN_ESCALAR not in ("realesrgan", "openvino", "realesrgan_x4plus", "ninguno", None, False, True):
+        avisos.append(f"imagen_escalar desconocido ({IMAGEN_ESCALAR!r}): usa realesrgan, openvino, realesrgan_x4plus o null")
     if LLM_CLAVE and not llm_local() and urllib.parse.urlparse(LLM_URL).scheme != "https":
         avisos.append(f"la clave del LLM viajaría sin cifrar a {LLM_URL}: usa https")
     if CFG.get("llm_clave_env") and not LLM_CLAVE:
@@ -1694,7 +1707,7 @@ def generar_imagen(prompt, salida, motor="fooocus"):
         cmd = [sys.executable, "-I", str(BASE / "herramientas/imagen_openvino.py"), str(IMAGEN_OV), IMAGEN_DISPOSITIVO]
     else:
         cmd = [str(FOOOCUS / "venv/bin/python"), "-I", str(BASE / "herramientas/imagen_fooocus.py"), str(FOOOCUS)]
-    r = subprocess.run(cmd, input=json.dumps({"prompt": prompt, "salida": str(salida)}),
+    r = subprocess.run(cmd, input=json.dumps({"prompt": prompt, "salida": str(salida), "escalar": IMAGEN_ESCALAR}),
                        capture_output=True, text=True, timeout=900)
     try:   # Fooocus también escribe en stdout: el resultado es la última línea
         resultado = json.loads(r.stdout.strip().splitlines()[-1])
@@ -1751,11 +1764,205 @@ def _ej_imagen(param, lang, m):
     return m["imagen_generando"]
 
 
+EXTS_IMAGEN = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".avif"}
+_ATSPI_NAUTILUS = """
+import json, sys, gi
+gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi
+from pathlib import Path
+desktop = Atspi.get_desktop(0)
+rutas = []
+for i in range(desktop.get_child_count()):
+    app = desktop.get_child_at_index(i)
+    if not app or "Nautilus" not in (app.get_name() or ""):
+        continue
+    for w in range(app.get_child_count()):
+        win = app.get_child_at_index(w)
+        if not win:
+            continue
+        partes_ruta, elegidos = [], []
+        def recorrer(n, prof=0):
+            if not n or prof > 35:
+                return
+            nombre = (n.get_name() or "").strip()
+            st = n.get_state_set()
+            estados = {s.value_nick for s in st.get_states()} if st else set()
+            if "selected" in estados and nombre:
+                for suf in (". Archivo", ". File"):
+                    if nombre.endswith(suf):
+                        nombre = nombre[:-len(suf)]
+                elegidos.append(nombre)
+            if n.get_role_name() == "panel" and n.get_child_count() in (1, 2):
+                hijos = [n.get_child_at_index(k) for k in range(n.get_child_count())]
+                btns = [h.get_name().strip() for h in hijos if h and h.get_role_name() == "button" and h.get_name()]
+                barra = any(h and h.get_role_name() == "label" and (h.get_name() or "").strip() == "/" for h in hijos)
+                if btns and (barra or btns[0].startswith(("Carpeta personal", "Home"))):
+                    seg = btns[0]
+                    partes_ruta.append(str(Path.home()) if seg.startswith(("Carpeta personal", "Home")) else seg)
+            for k in range(n.get_child_count()):
+                recorrer(n.get_child_at_index(k), prof + 1)
+        recorrer(win)
+        if partes_ruta and elegidos:
+            base = Path(*partes_ruta)
+            for e in elegidos:
+                p = base / e
+                if p.is_file():
+                    rutas.append(str(p))
+print(json.dumps(rutas))
+"""
+
+
+def _rutas_imagen_texto(texto):
+    """Extrae rutas de archivos de imagen existentes a partir de URIs file:// o rutas locales."""
+    rutas = []
+    for linea in (texto or "").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#"):
+            continue
+        if linea.startswith("file://"):
+            p = Path(urllib.parse.unquote(urllib.parse.urlparse(linea).path))
+        elif linea.startswith(("/", "~/")):
+            p = Path(linea).expanduser()
+        else:
+            continue
+        if p.is_file() and p.suffix.lower() in EXTS_IMAGEN and p not in rutas:
+            rutas.append(p)
+    return rutas
+
+
+def _imagenes_seleccionadas():
+    """Imágenes seleccionadas en el explorador de archivos (Nautilus por AT-SPI o Dolphin por D-Bus)."""
+    r = subprocess.run(["busctl", "--user", "list"], capture_output=True, text=True, timeout=3)
+    if "org.gnome.Nautilus" in r.stdout and shutil.which("python3"):
+        ra = subprocess.run(["python3", "-I", "-c", _ATSPI_NAUTILUS], capture_output=True, text=True, timeout=4)
+        if ra.returncode == 0 and ra.stdout.strip():
+            try:
+                elegidas = [Path(p) for p in json.loads(ra.stdout.strip().splitlines()[-1])
+                            if Path(p).is_file() and Path(p).suffix.lower() in EXTS_IMAGEN]
+                if elegidas:
+                    return elegidas
+            except Exception:
+                pass
+    for m_dol in re.finditer(r"\borg\.kde\.dolphin-\d+\b", r.stdout):
+        subprocess.run(["busctl", "--user", "call", m_dol.group(0), "/dolphin/Dolphin_1/actions/edit_copy",
+                        "org.qtproject.Qt.QAction", "trigger"], capture_output=True, timeout=2)
+        if elegidas := _rutas_imagen_texto(klipper_leer()):
+            return elegidas
+    return []
+
+
+def _imagenes_portapapeles():
+    """Imágenes en el portapapeles: rutas/URIs de archivos copiados o píxeles de imagen (wl-paste)."""
+    if shutil.which("wl-paste"):
+        rt = subprocess.run(["wl-paste", "--list-types"], capture_output=True, text=True, timeout=2)
+        tipos = set(rt.stdout.split()) if rt.returncode == 0 else set()
+        if "text/uri-list" in tipos:
+            ru = subprocess.run(["wl-paste", "--no-newline", "--type", "text/uri-list"],
+                                capture_output=True, text=True, timeout=2)
+            if rutas := _rutas_imagen_texto(ru.stdout):
+                return rutas
+        for mime, ext in (("image/png", ".png"), ("image/jpeg", ".jpg"), ("image/webp", ".webp"), ("image/bmp", ".bmp")):
+            if mime in tipos:
+                ri = subprocess.run(["wl-paste", "--type", mime], capture_output=True, timeout=5)
+                if ri.returncode == 0 and ri.stdout:
+                    tmp = RUNTIME / f"portapapeles{ext}"
+                    tmp.write_bytes(ri.stdout)
+                    return [tmp]
+    return _rutas_imagen_texto(klipper_leer())
+
+
+def obtener_imagenes_origen(preferir_portapapeles=False):
+    """Busca imágenes seleccionadas en el explorador o en el portapapeles."""
+    fuentes = (_imagenes_portapapeles, _imagenes_seleccionadas) if preferir_portapapeles \
+        else (_imagenes_seleccionadas, _imagenes_portapapeles)
+    for fn in fuentes:
+        try:
+            if rutas := fn():
+                return rutas
+        except Exception as e:
+            log(f"error leyendo imagen de origen: {e}")
+    return []
+
+
+def ruta_salida_sr(entrada):
+    """Guarda junto al archivo original (<nombre>-x4.png) o en carpeta_imagenes() si viene del portapapeles."""
+    entrada = Path(entrada)
+    if entrada.parent != RUNTIME and os.access(entrada.parent, os.W_OK):
+        base = re.sub(r"-x4$", "", entrada.stem)
+        return entrada.parent / f"{base}-x4.png"
+    carpeta = carpeta_imagenes()
+    carpeta.mkdir(parents=True, exist_ok=True)
+    if entrada.parent == RUNTIME:
+        return carpeta / time.strftime("%Y%m%d-%H%M%S-x4.png")
+    return carpeta / f"{re.sub(r'-x4$', '', entrada.stem)}-x4.png"
+
+
+def escalar_imagen_archivo(entrada, salida):
+    """Ejecuta la superresolución x4 en herramientas/imagen_openvino.py en un proceso aparte."""
+    cmd = [sys.executable, "-I", str(BASE / "herramientas/imagen_openvino.py"), str(BASE / "modelos"), IMAGEN_DISPOSITIVO]
+    modo = IMAGEN_ESCALAR if IMAGEN_ESCALAR and IMAGEN_ESCALAR not in ("ninguno", "no", "false") else "realesrgan"
+    r = subprocess.run(cmd, input=json.dumps({"entrada": str(entrada), "salida": str(salida), "escalar": modo}),
+                       capture_output=True, text=True, timeout=600)
+    try:
+        resultado = json.loads(r.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        resultado = {}
+    if not resultado.get("ok"):
+        log(f"error escalando la imagen: {resultado.get('error') or r.stderr.strip()[-800:]}")
+        return None
+    return resultado["ruta"]
+
+
+def _ej_escalar_imagen(param, lang, m):
+    from herramientas.imagen_openvino import resolver_modelo_sr
+    modo = IMAGEN_ESCALAR if IMAGEN_ESCALAR and IMAGEN_ESCALAR not in ("ninguno", "no", "false") else "realesrgan"
+    if not resolver_modelo_sr(BASE / "modelos", modo):
+        return m["sr_sin_modelo"]
+    if not _imagen_en_curso.acquire(blocking=False):
+        return m["imagen_ocupado"]
+    preferir_clip = normalizar(param) == "portapapeles"
+    origenes = obtener_imagenes_origen(preferir_portapapeles=preferir_clip)
+    if not origenes:
+        _imagen_en_curso.release()
+        return m["sr_sin_imagen"]
+    log(f"superresolución ({modo}): {[str(p) for p in origenes]}")
+
+    def en_segundo_plano():
+        ultima = None
+        try:
+            t = time.time()
+            for orig in origenes:
+                ultima = escalar_imagen_archivo(orig, ruta_salida_sr(orig)) or ultima
+        except Exception as e:
+            log(f"error escalando la imagen: {e}")
+        finally:
+            _imagen_en_curso.release()
+        if ultima:
+            log(f"superresolución lista en {time.time() - t:.1f}s: {ultima}")
+            lanzar(["xdg-open", ultima])
+        msg = m["sr_ok" if ultima else "imagen_error"]
+        sonido("exito" if ultima else "fallo", esperar=True)
+        notificar("🖼", msg if not ultima else f"{msg}\n{ultima}", ultima or "dialog-warning", segundos=10)
+        if _voz_activa and not _voz_activa.hablando:
+            _voz_activa.decir(msg, lang)
+
+    threading.Thread(target=en_segundo_plano, daemon=True).start()
+    return m["sr_escalando"]
+
+
 # --- Tabla declarativa de acciones e interpretación --------------------------------
 PARAM_APP = "<app>"   # en los ejemplos: el parámetro es una app que se busca en la frase
 NO_ES_PREGUNTA = r"^(?!\W*(que|what|como|how|por que|why|cual|which)\b)"
-# «Genera una imagen de…», «dibújame…». «Crea una imagen de docker» es otra cosa
-PIDE_IMAGEN = (NO_ES_PREGUNTA + r"(?!.*\b(docker|contenedor\w*|container\w*|iso|disco|disk|podman)\b)"
+PIDE_ESCALAR_IMAGEN = (
+    NO_ES_PREGUNTA + r".*"
+    + r"(\b(super\s*resolucion|super\s*resolution|reescala\w*|upscal\w*)\b"
+    + r"|\b(mejora\w*|escala\w*|aumenta\w*\s+(la\s+)?(resolucion|calidad)|sube\w*\s+(la\s+)?(resolucion|calidad)|"
+    + r"enhance\w*|enlarge\w*)\b.*\b(imagen\w*|foto\w*|image\w*|picture\w*|photo\w*|seleccionad\w*|selected|"
+    + r"porta\s*papeles|clipboard|copi\w*|copied)\b)"
+)
+# «Genera una imagen de…», «dibújame…». «Crea una imagen de docker» o «hazle superresolución» son otra cosa
+PIDE_IMAGEN = (NO_ES_PREGUNTA + r"(?!.*\b(docker|contenedor\w*|container\w*|iso|disco|disk|podman|"
+               r"super\s*resolucion|super\s*resolution|reescala\w*|upscal\w*)\b)"
                r".*\b(genera\w*|crea\w*|haz|hazme|dibuja\w*|pinta\w*|ilustra\w*|generate|create|make|draw|paint)\b"
                r".*\b(imagen\w*|foto\w*|dibujo\w*|ilustracion\w*|image\w*|picture\w*|photo\w*|drawing\w*|"
                r"illustration\w*|painting\w*)\b")
@@ -2092,6 +2299,21 @@ REGISTRO_ACCIONES = [
               + ((r"^\W*suspend\w*\W*$", "suspender"), (r"^\W*reboot\W*$", "reiniciar"),
                  (r"^\W*(shut\s*down|power\s*off)\W*$", "apagar")),
         ejecutor=_ej_energia_equipo,
+    ),
+    DefinicionAccion(
+        nombre="escalar_imagen",
+        riesgo=True,
+        ejemplos=(("mejora esta imagen", ""), ("hazle superresolución a la imagen", ""),
+                  ("escala la imagen seleccionada", ""), ("mejora la imagen del portapapeles", "portapapeles"),
+                  ("upscale this image", ""), ("enhance the selected image", "")),
+        prompt='aplicar superresolución x4 a la imagen seleccionada en el explorador o copiada en el portapapeles '
+               '(upscale/enhance image). parametro = "" | "portapapeles"',
+        evidencia=r"super\s*resolucion|super\s*resolution|reescala|escala|mejora|upscal|enhance|enlarge|resolucion",
+        reglas=(
+            (PIDE_ESCALAR_IMAGEN + r".*\b(porta\s*papeles|clipboard|copi\w*|copied)\b", "portapapeles"),
+            (PIDE_ESCALAR_IMAGEN, ""),
+        ),
+        ejecutor=_ej_escalar_imagen,
     ),
     DefinicionAccion(
         nombre="imagen",
@@ -2597,6 +2819,8 @@ def validar_interpretacion(accion, param, n, texto):
         return "no_entendido", ""
     if accion in ("imagen", "redactar"):     # la petición completa, no el resumen del LLM ni el del ejemplo
         param = texto
+    if accion == "escalar_imagen":
+        param = "portapapeles" if re.search(r"\b(porta\s*papeles|clipboard|copi\w*|copied)\b", n) else ""
     # "¿Cómo actualizo un paquete de npm?" es una pregunta, no una orden de actualizar el sistema
     if accion == "actualizar_sistema" and re.match(r"^\W*(como|how|que|what|por que|why|cual)\b", n):
         accion, param = "pregunta", texto

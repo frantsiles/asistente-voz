@@ -93,6 +93,8 @@ REVISION = {
     "rhasspy/piper-voices": "c10ece1aade47bb51c153c893d14e5bf8e5b7117",
     "Xenova/multilingual-e5-small": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
     "OpenVINO/LCM_Dreamshaper_v7-int8-ov": "340a03e5488f36f7f222e6efa29819850ad7e4be",
+    "CoderViking/realesr-general-x4v3-onnx": "c6a971706797c7502945a2b4c4274fce4900d4ab",
+    "tamnvcc/RealESRGAN-onnx": "9db3ad961ee48bcc08750aceed689920f2e60e62",
 }
 if motor == "nvidia":
     from faster_whisper import download_model
@@ -104,10 +106,34 @@ else:
     for m in ["whisper-medium-int8-ov", "whisper-base-int8-ov"]:   # comandos / palabra de activación
         if not (dst / m).exists():
             snapshot_download("OpenVINO/" + m, local_dir=dst / m, revision=REVISION["OpenVINO/" + m])
-    # Imágenes sin Fooocus: LCM Dreamshaper v7 int8 (~2,3 GB, ~20 s por imagen en CPU). IMAGENES=no lo omite
+    # Imágenes sin Fooocus: LCM Dreamshaper v7 int8 (~2,3 GB) + 3 motores de superresolución x4
     m = "LCM_Dreamshaper_v7-int8-ov"
-    if os.environ.get("IMAGENES", "si") != "no" and not (dst / m / "model_index.json").exists():
-        snapshot_download("OpenVINO/" + m, local_dir=dst / m, revision=REVISION["OpenVINO/" + m])
+    if os.environ.get("IMAGENES", "si") != "no":
+        if not (dst / m / "model_index.json").exists():
+            snapshot_download("OpenVINO/" + m, local_dir=dst / m, revision=REVISION["OpenVINO/" + m])
+        sr = dst / "realesr-general-x4v3.onnx"
+        if not sr.exists():
+            hf_hub_download("CoderViking/realesr-general-x4v3-onnx", "realesr-general-x4v3.onnx",
+                            local_dir=dst, revision=REVISION["CoderViking/realesr-general-x4v3-onnx"])
+        sr_plus = dst / "RealESRGAN_x4plus.fp16.onnx"
+        if not sr_plus.exists():
+            p = hf_hub_download("tamnvcc/RealESRGAN-onnx", "onnx/RealESRGAN_x4plus.fp16.onnx",
+                                local_dir=dst, revision=REVISION["tamnvcc/RealESRGAN-onnx"])
+            Path(p).replace(sr_plus)
+            (dst / "onnx").rmdir()
+        import hashlib, urllib.request
+        omz_dir = dst / "sr-omz"
+        omz_dir.mkdir(exist_ok=True)
+        omz_base = ("https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1/"
+                    "single-image-super-resolution-1032/FP16/single-image-super-resolution-1032")
+        for ext, sha in ((".xml", "d904663f8b31692a352b1a8416fde5e280c66da3a2c359bd75cca395a5b05b3e"),
+                         (".bin", "a52a4549011480d90246bbe6118718ee485c130480bbf5f7befdb3d5a2a1f057")):
+            f = omz_dir / f"single-image-super-resolution-1032{ext}"
+            if not f.exists():
+                urllib.request.urlretrieve(omz_base + ext, f)
+            if hashlib.sha256(f.read_bytes()).hexdigest() != sha:
+                f.unlink()
+                sys.exit(f"{f.name} no coincide con el hash esperado: borrado")
 for voz in ["es/es_MX/claude/high/es_MX-claude-high.onnx", "en/en_US/lessac/medium/en_US-lessac-medium.onnx"]:
     for ext in ["", ".json"]:
         if not (dst / "voces" / (voz + ext)).exists():

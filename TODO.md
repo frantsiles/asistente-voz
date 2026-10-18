@@ -46,7 +46,8 @@ Regla de diseño que se mantiene en todo: **solo acciones de una lista blanca**,
   - «Manda el portapapeles al teléfono» → `kdeconnect-cli --share-text`.
 - [x] 🟡 M — **Dictado**: «escribe …» teclea el texto en la ventana activa. En KDE/Wayland `wtype` no funciona; usar `kdotool`/`wdotool` o `ydotool` (necesita acceso a `/dev/uinput`), o bien copiar al portapapeles de Klipper y enviar `Ctrl+V`.
 - [x] 🟡 M — **Redactar**: «redacta un correo para…», «escríbeme una función que…» → el LLM escribe el texto o el código y lo deja en el portapapeles.
-- [x] 🟡 M — **Imágenes con Fooocus**: «genera una imagen de…» → el LLM escribe el prompt, se libera la VRAM de Ollama y Fooocus genera en segundo plano.
+- [x] 🟡 M — **Imágenes con Fooocus / OpenVINO y superresolución x4**: «genera una imagen de…» y «mejora esta imagen» (seleccionada en el explorador o en el portapapeles) con 3 motores (`realesrgan`, `openvino`, `realesrgan_x4plus`).
+- [ ] ⚪ M — **Mejorar la superresolución en fotografías reales y retratos**: evaluar restauración facial en ONNX (`GFPGANv1.4` / `CodeFormer`) o modelos específicos para fotos comprimidas (`Swin2SR` / `Real-HAT-GAN`) combinados con `escalar_imagen`.
 - [ ] ⚪ M — **«¿Qué hay en pantalla?»**: captura con Spectacle (`spectacle -b -n -o`) y descripción con un modelo de visión local. Para texto en pantalla, `qwen2.5vl` funciona mejor que `llama3.2-vision`; con 6 GB de VRAM, la versión 3B. Descargar el modelo de voz o de visión según haga falta (`keep_alive: 0` tras responder).
 - [x] ⚪ S — **Suspender / reiniciar / apagar** con confirmación por voz («¿seguro?» → «sí»).
 

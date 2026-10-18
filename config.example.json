@@ -17,6 +17,7 @@
   "modelo_redactar": null,
   "imagenes": "auto",
   "imagen_dispositivo": "CPU",
+  "imagen_escalar": "realesrgan",
   "fooocus": "~/Fooocus",
   "carpeta_imagenes": null,
   "whisper": "auto",

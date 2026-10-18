@@ -604,6 +604,30 @@ def probar_salvaguardas() -> tuple[int, int]:
     verificar("generar_openvino reintenta en español si transcribe en alfabeto no latino",
               asistente.generar_openvino(_PipeOV(), asistente.np.zeros(160, dtype=asistente.np.float32)) == "y apaga el equipo.")
 
+    from herramientas import imagen_openvino
+    mini = asistente.np.zeros((16, 16, 3), dtype=asistente.np.uint8)
+    for nombre_sr in ("realesrgan", "openvino", "realesrgan_x4plus"):
+        sr_modelo = imagen_openvino.resolver_modelo_sr(asistente.BASE / "modelos", nombre_sr)
+        if sr_modelo:
+            escalada = imagen_openvino.escalar(mini, sr_modelo)
+            verificar(f"escalar() con {nombre_sr} multiplica por 4 la resolución (x4 -> 64×64×3 uint8)",
+                      escalada.shape == (64, 64, 3) and escalada.dtype == asistente.np.uint8,
+                      f"{escalada.shape} {escalada.dtype}")
+    with tempfile.TemporaryDirectory() as tmp:
+        p_png = Path(tmp) / "prueba.png"
+        imagen_openvino.guardar_png(mini, p_png)
+        leida = imagen_openvino.leer_imagen(p_png)
+        verificar("leer_imagen decodifica el PNG y conserva dimensiones y tipo",
+                  leida.shape == (16, 16, 3) and leida.dtype == asistente.np.uint8, f"{leida.shape} {leida.dtype}")
+        verificar("_rutas_imagen_texto resuelve URIs file:// y rutas locales de imágenes",
+                  asistente._rutas_imagen_texto(f"file://{p_png}\n/no/existe.jpg") == [p_png])
+    verificar("«Mejora esta imagen» se interpreta como escalar_imagen",
+              asistente.interpretar("Mejora esta imagen") == ("escalar_imagen", ""))
+    verificar("«Hazle superresolución a la imagen» no se confunde con generar imagen",
+              asistente.interpretar("Hazle superresolución a la imagen") == ("escalar_imagen", ""))
+    verificar("«Mejora la imagen del portapapeles» prioriza el portapapeles",
+              asistente.interpretar("Mejora la imagen del portapapeles") == ("escalar_imagen", "portapapeles"))
+
     return ok, fallos
 
 
