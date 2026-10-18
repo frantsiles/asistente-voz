@@ -1863,16 +1863,17 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="portapapeles",
+        riesgo=True,
         ejemplos=(("explica lo que copié", "explicar"), ("explain the clipboard", "explicar"),
                   ("resume lo que copié", "resumir"), ("summarize the clipboard", "resumir"),
                   ("traduce lo que copié", "traducir"), ("translate the clipboard", "traducir")),
         prompt="usar el texto copiado en el portapapeles (clipboard). parametro = leer | resumir | traducir | explicar",
-        evidencia=r"portapapeles|clipboard|copi\w*|copied",
+        evidencia=r"porta\s*papeles|clipboard|copi\w*|copied",
         reglas=(
-            (r"\b(lee\w*|leame|leer|dime|read)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "leer"),
-            (r"\b(resum\w*|summarize)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "resumir"),
-            (r"\b(traduc\w*|translate)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "traducir"),
-            (r"\b(explic\w*|explain)\b.*?\b(copi\w*|portapapeles|clipboard|copied)\b", "explicar"),
+            (r"\b(lee\w*|leame|leer|dime|read)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "leer"),
+            (r"\b(resum\w*|summarize)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "resumir"),
+            (r"\b(traduc\w*|translate)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "traducir"),
+            (r"\b(explic\w*|explain)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "explicar"),
         ),
         ejecutor=_ej_portapapeles,
     ),
@@ -2509,17 +2510,23 @@ def interpretar(texto):
     # "abre el proyecto X" / "open project X"
     if m := re.match(r"^(abre|abrir|open)\s+(el\s+|the\s+)?(proyecto|repositorio|repo|project)\s+(.+?)[.!?]*$", n):
         return "abrir_proyecto", m.group(4).strip()
-    # "abre X" / "open X" / "muestra X" donde X es una app conocida: sin pasar por el modelo
-    m = re.match(r"^((tambien\s+|also\s+)?(abre|abrir|muestra|mostrar|open|launch|lanza|inicia|ejecuta|show))\s+(.+?)[.!?]*$", n)
-    if m and "proyecto" not in m.group(4) and "project" not in m.group(4) and (app := app_en(m.group(4))):
-        return "abrir_app", app
-    # "cierra X" / "close X" donde X es la ventana actual o una app conocida
+    # "abre X" / "open X" / "muestra X": si la app está instalada la abre; con «abre/open/lanza X» directos
+    # también devuelve abrir_app aunque no esté instalada, para responder «No encontré la aplicación X»
+    m = re.match(r"^((tambien\s+|also\s+)?(abre\w*|abrir|muestra|mostrar|open|launch|lanza\w*|inicia|ejecuta|show))\s+(.+?)[.!?]*$", n)
+    if m and not re.search(r"\b(proyecto|repositorio|repo|project)\b", m.group(4)):
+        if app := app_en(m.group(4)):
+            return "abrir_app", app
+        if m.group(3) not in ("inicia", "ejecuta", "mostrar", "muestra", "show") and (cand := _candidato_app(m.group(4))):
+            return "abrir_app", cand
+    # "cierra X" / "close X" donde X es la ventana actual o una app
     m = re.match(r"^(cierra|cierro|cerrar|close|quit)\s+(.+?)[.!?]*$", n)
     if m:
         if re.search(r"\b(ventana\w*|window\w*|esto|this)\b", m.group(2)):
             return "cerrar_app", ""
         if app := app_en(m.group(2)):
             return "cerrar_app", app
+        if cand := _candidato_app(m.group(2)):
+            return "cerrar_app", cand
     # Clasificador por embeddings: milisegundos y sin LLM. Si no está seguro, decide el LLM (si lo hay)
     if clf := clasificador():
         (accion, param), sim = clf.clasificar(n)
@@ -2542,6 +2549,17 @@ def interpretar(texto):
         log(f"error del LLM ({LLM}): {e}")
         return "error_llm", ""
     return validar_interpretacion(accion, param, n, texto)
+
+
+def _candidato_app(resto):
+    """Nombre de una app pedida con «abre X» / «cierra X» aunque no esté instalada (responderá que no la encontró)."""
+    c = re.sub(r"^((el|la|los|las|un|una|the|a|an)\s+)?((app|aplicacion|programa|application)\s+(de\s+)?)?",
+               "", resto.strip(" .?!,")).strip()
+    if 1 <= len(c.split()) <= 3 and len(clave(c)) >= 3 and not re.search(
+        r"\b(ventana\w*|window\w*|esto|this|eso|that|algo|something|todo|all|sesion|session)\b", c
+    ):
+        return c
+    return None
 
 
 def validar_interpretacion(accion, param, n, texto):
@@ -2659,13 +2677,16 @@ class WhisperOpenVINO:
 
 def generar_openvino(pipe, audio, **kw):
     """Whisper de OpenVINO con detección automática de idioma. A veces falla al detectarlo
-    ("Language token id -1"); entonces se reintenta en español."""
+    ("Language token id -1") o transcribe en otro alfabeto (griego, cirílico, árabe…);
+    entonces se reintenta en español."""
     try:
-        return pipe.generate(audio.tolist(), task="transcribe", **kw).texts[0].strip()
+        texto = pipe.generate(audio.tolist(), task="transcribe", **kw).texts[0].strip()
+        if not texto or re.search(r"[a-zA-Z]", texto):
+            return texto
     except RuntimeError as e:
         if "Language token" not in str(e):
             raise
-        return pipe.generate(audio.tolist(), task="transcribe", language="<|es|>", **kw).texts[0].strip()
+    return pipe.generate(audio.tolist(), task="transcribe", language="<|es|>", **kw).texts[0].strip()
 
 
 class WhisperCUDA:

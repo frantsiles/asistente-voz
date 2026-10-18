@@ -579,6 +579,31 @@ def probar_salvaguardas() -> tuple[int, int]:
     verificar("comando_en_terminal muestra el comando tal cual y lo ejecuta una vez",
               r.stdout.splitlines()[:2] == ['$ echo "hola $((1+1))"', "hola 2"], r.stdout)
 
+    # 14. App no instalada («Abre Spotify» cuando falta) responde que no la encontró, y Whisper reintenta alfabetos no latinos
+    sp_prev = asistente.APPS.pop("spotify", None)
+    try:
+        acc, prm = asistente.interpretar("Abre Spotify")
+        resp = asistente.ejecutar(acc, prm, "es")
+        verificar("«Abre Spotify» sin Spotify instalado responde que no encontró la aplicación",
+                  (acc, prm) == ("abrir_app", "spotify") and resp == m_es["app_no"].format(x="spotify"),
+                  f"({acc!r}, {prm!r}) -> {resp!r}")
+        acc_c, prm_c = asistente.interpretar("Cierra Spotify")
+        resp_c = asistente.ejecutar(acc_c, prm_c, "es")
+        verificar("«Cierra Spotify» sin Spotify instalado responde que no encontró la aplicación",
+                  (acc_c, prm_c) == ("cerrar_app", "spotify") and resp_c == m_es["app_no"].format(x="spotify"),
+                  f"({acc_c!r}, {prm_c!r}) -> {resp_c!r}")
+    finally:
+        if sp_prev is not None:
+            asistente.APPS["spotify"] = sp_prev
+
+    class _PipeOV:
+        def generate(self, _audio, **kw):
+            texto = "y apaga el equipo." if kw.get("language") == "<|es|>" else "Απαγάλε κύπω."
+            return type("R", (), {"texts": [texto]})()
+
+    verificar("generar_openvino reintenta en español si transcribe en alfabeto no latino",
+              asistente.generar_openvino(_PipeOV(), asistente.np.zeros(160, dtype=asistente.np.float32)) == "y apaga el equipo.")
+
     return ok, fallos
 
 
