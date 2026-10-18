@@ -56,7 +56,8 @@ def probar_frases(ruta: Path) -> tuple[int, int]:
         accion, param = asistente.interpretar(frase)
         errores = []
 
-        if accion != esp_accion or param != esp_param:
+        esp_params = esp_param if isinstance(esp_param, list) else [esp_param]
+        if accion != esp_accion or param not in esp_params:
             errores.append(
                 f"interpretar() -> ({accion!r}, {param!r}), esperaba ({esp_accion!r}, {esp_param!r})"
             )

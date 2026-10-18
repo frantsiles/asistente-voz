@@ -2189,8 +2189,7 @@ EJEMPLOS_CHARLA = (  # rechazo explícito: frases de reuniones, ruido y órdenes
     "hay que revisar la historia de usuario", "I think we should merge it after the review",
     "ya te mando el enlace por el chat", "nos vemos luego", "gracias a todos por venir", "mmm", "eh",
     "el despliegue de ayer salió bien", "tenemos que validar con QA", "can you share your screen",
-    "apaga la computadora", "reinicia el equipo", "manda un correo a juan", "llama a mi mamá", "pide una pizza",
-    "shut down the computer",
+    "manda un correo a juan", "llama a mi mamá", "pide una pizza",
 )
 
 

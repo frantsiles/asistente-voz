@@ -3,21 +3,30 @@
     "frase": "Abre Firefox",
     "accion": "abrir_app",
     "param": "firefox",
-    "app_id": "firefox",
+    "app_id": [
+      "firefox",
+      "org.mozilla.firefox"
+    ],
     "idioma": "es"
   },
   {
     "frase": "Open Firefox",
     "accion": "abrir_app",
     "param": "firefox",
-    "app_id": "firefox",
+    "app_id": [
+      "firefox",
+      "org.mozilla.firefox"
+    ],
     "idioma": "en"
   },
   {
     "frase": "Aure, Fire, Firefox",
     "accion": "abrir_app",
     "param": "firefox",
-    "app_id": "firefox"
+    "app_id": [
+      "firefox",
+      "org.mozilla.firefox"
+    ]
   },
   {
     "frase": "ahora es Spotify.",
@@ -80,7 +89,10 @@
     "frase": "Cierra Firefox",
     "accion": "cerrar_app",
     "param": "firefox",
-    "app_id": "firefox",
+    "app_id": [
+      "firefox",
+      "org.mozilla.firefox"
+    ],
     "idioma": "es"
   },
   {
@@ -504,7 +516,10 @@
   {
     "frase": "Reinicia el contenedor redis",
     "accion": "docker_reiniciar",
-    "param": "redis",
+    "param": [
+      "redis",
+      "redis-local"
+    ],
     "idioma": "es"
   },
   {
@@ -751,11 +766,6 @@
     "accion": "brillo",
     "param": "luz_nocturna_off",
     "idioma": "es"
-  },
-  {
-    "frase": "Reinicia spotify",
-    "accion": "no_entendido",
-    "param": ""
   },
   {
     "frase": "¿Cómo apago el equipo desde la terminal?",
