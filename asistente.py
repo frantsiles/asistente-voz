@@ -69,7 +69,7 @@ def _cargar_config():
 CFG = _cargar_config()
 CLAVES_CFG = {"proyectos", "compose", "terminal", "apps_terminal", "alias_apps", "tareas", "confirmar",
               "modelo_comandos", "modelo_preguntas", "whisper", "idiomas", "whisper_modelo",
-              "whisper_precision", "comando_actualizar", "comando_limpiar", "hablar", "nombre", "palabra_activacion",
+              "whisper_precision", "comando_actualizar", "comando_limpiar", "comando_servicios", "alias_servicios", "hablar", "nombre", "palabra_activacion",
               "variantes_activacion", "umbral_activacion", "llm", "llm_url", "llm_clave_env", "clasificador",
               "umbral_clasificador", "modelo_redactar", "imagenes", "imagen_dispositivo", "imagen_escalar", "fooocus",
               "carpeta_imagenes"}
@@ -130,10 +130,14 @@ CARPETA_IMAGENES = Path(CFG["carpeta_imagenes"]).expanduser() if CFG.get("carpet
 COMANDO_ACTUALIZAR = CFG.get("comando_actualizar")
 # Comando para "limpia la caché de paquetes". Por defecto: yay/paru -Sc, paccache o pacman -Sc (Arch), dnf (Fedora)
 COMANDO_LIMPIAR = CFG.get("comando_limpiar")
+# Comando para encender/apagar servicios por voz: entiende `lista --json` y `on|off|reiniciar NOMBRE`
+# (herramientas/svc). Si no está instalado, la acción servicio responde que no está disponible
+COMANDO_SERVICIOS = CFG.get("comando_servicios", "svc")
 # Tareas de desarrollo permitidas (nombre -> comando que se ejecuta en la terminal)
 TAREAS = {k.strip(): v for k, v in CFG.get("tareas", {}).items() if isinstance(v, str) and v.strip()}
 # Acciones sensibles que piden confirmación por voz de 1 paso («¿Confirmas…?» -> «sí»)
-CONFIRMAR = set(CFG.get("confirmar", ["docker_detener", "docker_reiniciar"]))
+# servicio solo pregunta si hay mensaje para ese parámetro (confirmar_servicio_off:docker: para los contenedores)
+CONFIRMAR = set(CFG.get("confirmar", ["docker_detener", "docker_reiniciar", "servicio"]))
 # Siempre se confirman, aunque `confirmar` no las incluya: cierran la sesión y lo que no esté guardado
 CONFIRMAR_SIEMPRE = {"energia_equipo"}
 APPS_TERMINAL = CFG.get("apps_terminal", ["htop", "btop", "top", "nvtop", "lazygit", "lazydocker", "k9s",
@@ -159,6 +163,19 @@ ALIAS_APPS = {
     **dict.fromkeys(["btop", "betop", "bitop", "pittop", "vitop"], "btop"),
     **dict.fromkeys(["kwrite", "write", "grite", "kwriter"], "org.kde.kwrite"),
     **CFG.get("alias_apps", {}),
+}
+# Nombres dichos (clave normalizada sin espacios) -> servicio del catálogo de COMANDO_SERVICIOS.
+# El nombre del catálogo siempre vale; estos cubren nombres genéricos y errores de transcripción
+ALIAS_SERVICIOS = {
+    **dict.fromkeys(["ollama", "olama", "ollamma", "olamma"], "ollama"),
+    **dict.fromkeys(["docker", "doker", "docke"], "docker"),
+    **dict.fromkeys(["bluetooth", "bluetut", "blutut", "blututh", "bluetoot"], "bluetooth"),
+    **dict.fromkeys(["cups", "impresion", "impresora", "impresoras"], "cups"),
+    **dict.fromkeys(["libvirt", "maquinasvirtuales", "virtualizacion"], "libvirt"),
+    **dict.fromkeys(["mariadb", "mysql"], "mariadb"),
+    **dict.fromkeys(["abrt", "informesdefallos", "reportesdefallos"], "abrt"),
+    **dict.fromkeys(["autoperfil", "perfilautomatico"], "autoperfil"),
+    **CFG.get("alias_servicios", {}),
 }
 DIRS_DESKTOP = [HOME / ".local/share/applications", HOME / ".local/share/flatpak/exports/share/applications",
                 Path("/var/lib/flatpak/exports/share/applications"), Path("/usr/share/applications")]
@@ -261,6 +278,18 @@ MSG = {
         "confirmar_energia_equipo_reiniciar": "¿Confirmas reiniciar el equipo? Se cerrarán las aplicaciones.",
         "confirmar_energia_equipo_apagar": "¿Confirmas apagar el equipo? Se cerrarán las aplicaciones.",
         "energia_suspender": "Suspendiendo.", "energia_reiniciar": "Reiniciando.", "energia_apagar": "Apagando.",
+        "servicio_on": "{x} encendido.", "servicio_off": "{x} apagado.", "servicio_reiniciar": "{x} reiniciado.",
+        "servicio_off_ram": "{x} apagado, liberé {r}.", "servicio_ya_on": "{x} ya está encendido.",
+        "servicio_ya_off": "{x} ya está apagado.", "servicio_no": "No conozco el servicio {x}.",
+        "servicio_fallo": "No pude cambiar {x}. Si apareció la ventana de contraseña, quizá se canceló.",
+        "servicio_sin_comando": "No tengo el comando de servicios instalado.",
+        "servicio_propio": "No puedo apagarme ni reiniciarme a mí mismo.",
+        "servicio_sin_llm": " Sin él no puedo responder preguntas hasta que lo enciendas.",
+        "servicio_cambiando": "Cambiando {x}…",
+        "servicios_lista": "Encendidos: {x}.", "servicios_apagados": " Apagados: {x}.",
+        "servicios_ninguno": "No hay ningún servicio encendido.",
+        "confirmar_servicio_off:docker": "¿Confirmas apagar Docker? Se detendrán todos los contenedores.",
+        "llm_apagado": "Ollama está apagado. Di «enciende Ollama» y vuelve a intentarlo.",
         "llm_error": "No pude conectar con el modelo de lenguaje.",
         "sin_llm": "No tengo un modelo de lenguaje configurado para eso.", "no_entendi": "No te entendí.",
         "fallo": "Algo falló al ejecutar el comando.", "pensando": "Pensando…",
@@ -341,6 +370,18 @@ MSG = {
         "confirmar_energia_equipo_reiniciar": "Do you confirm restarting the computer? Apps will be closed.",
         "confirmar_energia_equipo_apagar": "Do you confirm shutting down the computer? Apps will be closed.",
         "energia_suspender": "Going to sleep.", "energia_reiniciar": "Restarting.", "energia_apagar": "Shutting down.",
+        "servicio_on": "{x} is on.", "servicio_off": "{x} is off.", "servicio_reiniciar": "{x} restarted.",
+        "servicio_off_ram": "{x} is off, freed {r}.", "servicio_ya_on": "{x} is already on.",
+        "servicio_ya_off": "{x} is already off.", "servicio_no": "I don't know the service {x}.",
+        "servicio_fallo": "I couldn't change {x}. If the password window appeared, it may have been cancelled.",
+        "servicio_sin_comando": "The services command isn't installed.",
+        "servicio_propio": "I can't stop or restart myself.",
+        "servicio_sin_llm": " Without it I can't answer questions until you turn it on.",
+        "servicio_cambiando": "Changing {x}…",
+        "servicios_lista": "On: {x}.", "servicios_apagados": " Off: {x}.",
+        "servicios_ninguno": "No services are on.",
+        "confirmar_servicio_off:docker": "Do you confirm turning off Docker? All containers will stop.",
+        "llm_apagado": "Ollama is off. Say \"turn on Ollama\" and try again.",
         "llm_error": "I couldn't connect to the language model.",
         "sin_llm": "I don't have a language model configured for that.", "no_entendi": "Sorry, I didn't understand.",
         "fallo": "Something went wrong running the command.", "pensando": "Thinking…",
@@ -1618,6 +1659,104 @@ def _ej_energia_equipo(param, _lang, m):
     return m[f"energia_{param}"]
 
 
+_servicios = (0.0, {})
+
+
+def servicios(refrescar=False):
+    """{nombre: fila} del catálogo de COMANDO_SERVICIOS (estado, ram_mb, unidades…), refrescado cada 30 s.
+    {} si el comando no está instalado o falla."""
+    global _servicios
+    if not refrescar and time.time() - _servicios[0] < 30:
+        return _servicios[1]
+    catalogo = {}
+    if shutil.which(COMANDO_SERVICIOS):
+        try:
+            r = subprocess.run([COMANDO_SERVICIOS, "lista", "--json"], capture_output=True, text=True, timeout=10)
+            catalogo = {f["nombre"]: f for f in json.loads(r.stdout)} if r.returncode == 0 else {}
+        except (subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as e:
+            log(f"{COMANDO_SERVICIOS} lista --json falló: {e}")
+    _servicios = (time.time(), catalogo)
+    return catalogo
+
+
+def _unidad_propia():
+    """La unidad de systemd de este proceso (asistente-voz.service), para no apagarse a sí mismo."""
+    try:
+        return Path("/proc/self/cgroup").read_text().strip().rsplit("/", 1)[-1]
+    except OSError:
+        return ""
+
+
+UNIDAD_PROPIA = _unidad_propia()
+
+
+# Cómo se dice cada servicio; los demás, con mayúscula inicial
+NOMBRES_SERVICIO = {"mariadb": "MariaDB", "cups": "CUPS", "abrt": "ABRT", "libvirt": "libvirt"}
+
+
+def _nombre_servicio(nombre):
+    return NOMBRES_SERVICIO.get(nombre, nombre.capitalize())
+
+
+def _ram_legible(mb, lang):
+    if mb >= 1024:
+        gb = f"{mb / 1024:.1f}".rstrip("0").rstrip(".")
+        return f"{gb.replace('.', ',') if lang == 'es' else gb} GB"
+    return f"{mb} MB"
+
+
+def _ej_servicio(param, lang, m):
+    if not shutil.which(COMANDO_SERVICIOS):
+        return m["servicio_sin_comando"]
+    catalogo = servicios(refrescar=True)
+    if param == "lista":
+        activos = sorted((f for f in catalogo.values() if f["estado"] in ("activo", "parcial")),
+                         key=lambda f: -f["ram_mb"])
+        apagados = [_nombre_servicio(f["nombre"]) for f in catalogo.values() if f not in activos]
+        if not activos:
+            return m["servicios_ninguno"]
+        # la RAM solo de los que pesan: leer «6 MB» de cada uno no ayuda a decidir qué apagar
+        txt = m["servicios_lista"].format(x=", ".join(
+            _nombre_servicio(f["nombre"]) + (f" ({_ram_legible(f['ram_mb'], lang)})" if f["ram_mb"] >= 100 else "")
+            for f in activos))
+        return txt + (m["servicios_apagados"].format(x=", ".join(apagados)) if apagados else "")
+    orden, _, nombre = param.partition(":")
+    fila = catalogo.get(nombre)
+    x = _nombre_servicio(nombre)
+    if orden not in ("on", "off", "reiniciar") or not fila:
+        return m["servicio_no"].format(x=nombre or param)
+    if UNIDAD_PROPIA in fila.get("unidades", ()):
+        return m["servicio_propio"]
+    encendido = fila["estado"] in ("activo", "parcial")
+    if orden == "on" and fila["estado"] == "activo":
+        return m["servicio_ya_on"].format(x=x)
+    if orden == "off" and not encendido:
+        return m["servicio_ya_off"].format(x=x)
+    # Los de sistema pueden abrir la ventana de contraseña de KDE (polkit): hay que dar tiempo a escribirla
+    notificar(NOMBRE, m["servicio_cambiando"].format(x=x), "system-run", transitoria=True)
+    r = subprocess.run([COMANDO_SERVICIOS, orden, nombre], capture_output=True, text=True, timeout=120)
+    servicios(refrescar=True)
+    if r.returncode != 0:
+        log(f"{COMANDO_SERVICIOS} {orden} {nombre}: {r.stderr.strip()}")
+        return m["servicio_fallo"].format(x=x)
+    if orden == "off":
+        txt = (m["servicio_off_ram"].format(x=x, r=_ram_legible(fila["ram_mb"], lang)) if fila["ram_mb"] >= 100
+               else m["servicio_off"].format(x=x))
+        if nombre == "ollama" and LLM == "ollama" and llm_local():
+            txt += m["servicio_sin_llm"]
+        return txt
+    return m[f"servicio_{orden}"].format(x=x)
+
+
+def mensaje_llm_error(m):
+    """«No pude conectar con el LLM», o «Ollama está apagado» si es eso y se puede encender por voz."""
+    if LLM == "ollama" and llm_local():
+        ollama = servicios().get("ollama")
+        if ollama and ollama["estado"] != "activo":
+            return m["llm_apagado"]
+    return m["llm_error"]
+
+
 def _ej_pregunta(param, _lang, m):
     notificar(m["pensando"], param, "dialog-question")
     return llm(MODELO_PREGUNTAS, m["responde"], param).strip()
@@ -1983,6 +2122,44 @@ VERBOS_ENERGIA = {
     "reiniciar": r"\b(reinicia\w*|restart\w*|reboot\w*)\b",
     "apagar": r"\b(apaga\w*|shut\s*down|power\s*off|turn\s*off)\b",
 }
+# Servicios: gana el verbo que aparece primero («inicia ollama para trabajar» enciende). «Para» a secas solo
+# al principio: en medio de la frase casi siempre es la preposición
+VERBOS_SERVICIO = {
+    "on": r"\b(enciend\w*|prend\w*|activa\w*|arranca\w*|inicia\w*|levanta\w*|start\w*|turn\s+on|enable\w*)\b",
+    "off": r"\b(apaga\w*|deten\w*|desactiva\w*|stop\w*|turn\s+off|disable\w*|kill)\b|^\W*(para|parar)\b",
+    "reiniciar": r"\b(reinicia\w*|restart\w*)\b",
+}
+# «Apaga docker» a secas sigue siendo docker compose (docker_detener); el servicio entero hay que pedirlo así
+PALABRA_SERVICIO = r"\b(servicio\w*|service\w*|demonio|daemon|motor|engine)\b"
+
+
+def buscar_servicio(n):
+    """Nombre del catálogo de servicios que se menciona en la frase normalizada, o None."""
+    nombres = set(servicios()) | set(ALIAS_SERVICIOS.values())
+    palabras = re.findall(r"[a-z0-9]+", n)
+    for largo in (3, 2, 1):                  # «máquinas virtuales», «maria db» antes que palabras sueltas
+        for i in range(len(palabras) - largo + 1):
+            k = "".join(palabras[i:i + largo])
+            nombre = k if k in nombres else ALIAS_SERVICIOS.get(k)
+            if nombre:
+                return nombre
+    return None
+
+
+def interpretar_servicio(n):
+    """«Apaga ollama» -> "off:ollama", «¿qué servicios están encendidos?» -> "lista", o None."""
+    if re.match(r"^\W*(como|how|que es|what is|por que|why|para que)\b", n):
+        return None
+    verbos = [(m.start(), orden) for orden, v in VERBOS_SERVICIO.items() if (m := re.search(v, n))]
+    nombre = buscar_servicio(n)
+    if verbos and nombre and (nombre != "docker" or re.search(PALABRA_SERVICIO, n)):
+        return f"{min(verbos)[1]}:{nombre}"
+    # La lista hay que pedirla: «los servicios de AKS están caídos» es charla
+    if not nombre and re.search(r"\b(servicios|services)\b", n) and re.search(
+            r"\b(que|cuales|estado|lista\w*|muestra\w*|dime|encendid\w*|prendid\w*|activos|corriendo|which|what|"
+            r"list|status|show|running|on)\b", n):
+        return "lista"
+    return None
 
 
 class DefinicionAccion(NamedTuple):
@@ -2316,6 +2493,18 @@ REGISTRO_ACCIONES = [
         ejecutor=_ej_escalar_imagen,
     ),
     DefinicionAccion(
+        nombre="servicio",
+        riesgo=True,   # el parámetro siempre sale de la frase (interpretar_servicio), no del clasificador ni del LLM
+        ejemplos=(("apaga ollama", "off"), ("enciende ollama", "on"), ("reinicia el servicio de ollama", "reiniciar"),
+                  ("turn off the ollama service", "off"), ("qué servicios están encendidos", "lista"),
+                  ("which services are running", "lista"), ("estado de los servicios", "lista")),
+        prompt="encender, apagar o reiniciar un servicio del sistema (ollama, docker, bluetooth, impresión…) o "
+               "decir cuáles están encendidos. parametro = on:nombre | off:nombre | reiniciar:nombre | lista",
+        evidencia=r"servici|service|enciend|prend|activ|arranc|inici|levant|apag|deten|stop|start|restart|reinici|"
+                  r"turn|enable|disable",
+        ejecutor=_ej_servicio,
+    ),
+    DefinicionAccion(
         nombre="imagen",
         riesgo=True,   # descarga el LLM de la GPU y la ocupa más de un minuto
         ejemplos=(("genera una imagen de un perro en la playa", ""), ("dibújame un dragón", ""),
@@ -2348,7 +2537,7 @@ REGISTRO_ACCIONES = [
              # «¿Cómo escribo…?» en primera persona: es una pregunta, no una orden ni el portapapeles
              r"como (funciona|se|hago|puedo|debo|escribo|creo|instalo|configuro|uso|implemento|declaro|defino|"
              r"ordeno|convierto|conecto|despliego|soluciono|arreglo|evito|leo|obtengo|agrego|anado|elimino|borro|"
-             r"calculo|recorro|manejo|pruebo|depuro|optimizo|apago|reinicio|suspendo|limpio)|"
+             r"calculo|recorro|manejo|pruebo|depuro|optimizo|apago|reinicio|suspendo|limpio|enciendo|prendo|activo|desactivo|detengo)|"
              r"cual es la diferencia|por que|explica|diferencia entre|what is|what are|what does|how (does|do|can|to|should|would)|"
              r"why|explain|difference between)\b", None),
         ),
@@ -2699,6 +2888,10 @@ def interpretar(texto):
     if m := re.match(r"^(abre|abrir|open|lanza|launch)\s+(lazygit|(?:la\s+|una\s+|a\s+)?(?:terminal|consola))\s+(en|in)\s+(el\s+proyecto\s+|the\s+project\s+|project\s+)?(.+?)[.!?]*$", n):
         herr = "lazygit" if "lazygit" in m.group(2) else "terminal"
         return "terminal_proyecto", f"{herr}:{m.group(5).strip()}"
+    # Servicios del sistema: «apaga ollama», «enciende el bluetooth», «¿qué servicios están encendidos?».
+    # Antes que «reinicia X» (contenedor) y que docker_levantar/detener («apaga docker» sin «servicio» sigue allí)
+    if servicio := interpretar_servicio(n):
+        return "servicio", servicio
     # Docker con más detalle: "logs de X", "reinicia el contenedor X"
     if m := re.match(r"^(abre\s+|muestra\s+|ver\s+|show\s+|open\s+)?(los\s+|the\s+)?(logs|registros)\s+(del\s+contenedor\s+|de\s+|of\s+container\s+|of\s+|for\s+)(.+?)[.!?]*$", n):
         return "docker_logs", m.group(5).strip()
@@ -2817,6 +3010,11 @@ def validar_interpretacion(accion, param, n, texto):
             and not re.match(r"^\W*(limpia\w*|clean|clear)\s+(la |the )?(cache|cach)\W*$", n):
         log(f"descartado limpiar_cache: no es la caché de paquetes")
         return "no_entendido", ""
+    if accion == "servicio":
+        param = interpretar_servicio(n)
+        if not param:
+            log("descartado servicio: la frase no nombra un servicio ni pide la lista")
+            return "no_entendido", ""
     if accion in ("imagen", "redactar"):     # la petición completa, no el resumen del LLM ni el del ejemplo
         param = texto
     if accion == "escalar_imagen":
@@ -2854,7 +3052,7 @@ def ejecutar(accion, param, lang):
     """Devuelve el texto de respuesta en el idioma indicado."""
     m = MSG[lang]
     if accion == "error_llm":
-        return m["llm_error"]
+        return mensaje_llm_error(m)
     fn = EJECUTORES.get(accion)
     return fn(param, lang, m) if fn else m["no_entendi"]
 
@@ -3098,11 +3296,11 @@ class Asistente:
                 if not respuesta:
                     notificar(f"«{texto}»", m["no_entendi"], "dialog-warning", segundos=5)
             except Exception as e:
-                clave_msg = "sin_llm" if isinstance(e, SinLLM) else "llm_error"
+                aviso = m["sin_llm"] if isinstance(e, SinLLM) else mensaje_llm_error(m)
                 log(f"pregunta sin respuesta: {'llm = ninguno' if isinstance(e, SinLLM) else e}")
                 sonido("fallo")
-                notificar(f"«{texto}»", m[clave_msg], "dialog-warning", segundos=5)
-                self.voz.decir(m[clave_msg], lang)
+                notificar(f"«{texto}»", aviso, "dialog-warning", segundos=5)
+                self.voz.decir(aviso, lang)
             return
 
         try:

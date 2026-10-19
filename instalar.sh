@@ -174,6 +174,11 @@ echo "==> Servicio de systemd y entrada del menú"
 mkdir -p ~/.config/systemd/user ~/.local/share/applications
 sed "s|@DIR@|$DIR|g" "$DIR/systemd/asistente-voz.service" > ~/.config/systemd/user/asistente-voz.service
 cp "$DIR/systemd/asistente-voz.desktop" ~/.local/share/applications/
+# svc: encender y apagar servicios (también por voz). Si ya tienes un `svc` propio, no se toca
+if ! command -v svc >/dev/null 2>&1; then
+    mkdir -p ~/.local/bin
+    ln -s "$DIR/herramientas/svc" ~/.local/bin/svc
+fi
 systemctl --user daemon-reload
 systemctl --user enable --now asistente-voz.service
 systemctl --user restart asistente-voz.service

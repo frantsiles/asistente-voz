@@ -26,5 +26,7 @@
   "whisper_precision": "int8_float16",
   "comando_actualizar": null,
   "comando_limpiar": null,
+  "comando_servicios": "svc",
+  "alias_servicios": {},
   "hablar": true
 }

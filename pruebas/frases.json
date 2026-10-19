@@ -789,5 +789,83 @@
     "frase": "Limpia la caché del navegador",
     "accion": "no_entendido",
     "param": ""
+  },
+  {
+    "frase": "Apaga Ollama",
+    "accion": "servicio",
+    "param": "off:ollama",
+    "idioma": "es"
+  },
+  {
+    "frase": "Enciende el bluetooth",
+    "accion": "servicio",
+    "param": "on:bluetooth",
+    "idioma": "es"
+  },
+  {
+    "frase": "Reinicia el servicio de Ollama",
+    "accion": "servicio",
+    "param": "reiniciar:ollama",
+    "idioma": "es"
+  },
+  {
+    "frase": "Inicia Ollama para trabajar",
+    "accion": "servicio",
+    "param": "on:ollama"
+  },
+  {
+    "frase": "Para Ollama",
+    "accion": "servicio",
+    "param": "off:ollama"
+  },
+  {
+    "frase": "Apaga la impresora",
+    "accion": "servicio",
+    "param": "off:cups"
+  },
+  {
+    "frase": "Apaga el servicio de Docker",
+    "accion": "servicio",
+    "param": "off:docker",
+    "idioma": "es"
+  },
+  {
+    "frase": "Turn off the Ollama service",
+    "accion": "servicio",
+    "param": "off:ollama",
+    "idioma": "en"
+  },
+  {
+    "frase": "Start MariaDB",
+    "accion": "servicio",
+    "param": "on:mariadb",
+    "idioma": "en"
+  },
+  {
+    "frase": "¿Qué servicios están encendidos?",
+    "accion": "servicio",
+    "param": "lista",
+    "idioma": "es"
+  },
+  {
+    "frase": "Which services are running?",
+    "accion": "servicio",
+    "param": "lista",
+    "idioma": "en"
+  },
+  {
+    "frase": "Apaga Docker",
+    "accion": "docker_detener",
+    "param": ""
+  },
+  {
+    "frase": "Levanta Docker",
+    "accion": "docker_levantar",
+    "param": ""
+  },
+  {
+    "frase": "¿Cómo enciendo Ollama?",
+    "accion": "pregunta",
+    "param": "¿Cómo enciendo Ollama?"
   }
 ]

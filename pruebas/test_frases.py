@@ -34,11 +34,22 @@ TAREAS_BASE = {
     "build backend": "npm run build",
 }
 
+SERVICIOS_BASE = [
+    {"nombre": "ollama", "estado": "activo", "ram_mb": 10485, "unidades": ["ollama.service"]},
+    {"nombre": "asistente", "estado": "activo", "ram_mb": 4930, "unidades": ["asistente-voz.service"]},
+    {"nombre": "docker", "estado": "activo", "ram_mb": 639, "unidades": ["docker.service", "docker.socket"]},
+    {"nombre": "bluetooth", "estado": "activo", "ram_mb": 3, "unidades": ["bluetooth.service"]},
+    {"nombre": "cups", "estado": "parcial", "ram_mb": 6, "unidades": ["cups.service", "cups.socket"]},
+    {"nombre": "mariadb", "estado": "inactivo", "ram_mb": 0, "unidades": ["mariadb.service"]},
+]
+
 
 def preparar_entorno(usar_llm: bool = False):
     for clave, valor in APPS_BASE.items():
         asistente.APPS.setdefault(clave, valor)
     asistente.TAREAS.update(TAREAS_BASE)
+    # Catálogo de servicios fijo (no depende de `svc` ni de lo que esté encendido en este equipo)
+    asistente._servicios = (float("inf"), {f["nombre"]: f for f in SERVICIOS_BASE})
     if not usar_llm:
         asistente.llm = lambda *_a, **_kw: json.dumps({"accion": "no_entendido", "parametro": ""})
 
@@ -627,6 +638,62 @@ def probar_salvaguardas() -> tuple[int, int]:
               asistente.interpretar("Hazle superresolución a la imagen") == ("escalar_imagen", ""))
     verificar("«Mejora la imagen del portapapeles» prioriza el portapapeles",
               asistente.interpretar("Mejora la imagen del portapapeles") == ("escalar_imagen", "portapapeles"))
+
+    # Servicios: el ejecutor llama a un `svc` falso que registra las órdenes
+    import tempfile
+    previo = asistente.COMANDO_SERVICIOS, asistente._servicios, asistente.UNIDAD_PROPIA
+    m_es = asistente.MSG["es"]
+    with tempfile.TemporaryDirectory() as tmp:
+        registro = Path(tmp) / "ordenes"
+        falso = Path(tmp) / "svc"
+        falso.write_text(f"""#!/usr/bin/env python3
+import json, sys
+if sys.argv[1:] == ["lista", "--json"]:
+    print(json.dumps({json.dumps(SERVICIOS_BASE)}))
+else:
+    open({str(registro)!r}, "a").write(" ".join(sys.argv[1:]) + "\\n")
+    sys.exit(1 if sys.argv[1:] == ["on", "mariadb"] else 0)
+""")
+        falso.chmod(0o755)
+        try:
+            asistente.COMANDO_SERVICIOS = str(falso)
+            asistente.UNIDAD_PROPIA = "asistente-voz.service"
+            r = asistente._ej_servicio("off:ollama", "es", m_es)
+            verificar("Apagar ollama llama a `svc off ollama` y dice cuánta RAM libera",
+                      registro.read_text() == "off ollama\n" and "10,2 GB" in r, r)
+            r = asistente._ej_servicio("lista", "es", m_es)
+            verificar("La lista dice la RAM de los que pesan y cuáles están apagados",
+                      "Ollama (10,2 GB)" in r and "Bluetooth" in r and "(3 MB)" not in r
+                      and r.endswith("Apagados: MariaDB."), r)
+            verificar("Encender uno que ya está encendido no llama a svc",
+                      asistente._ej_servicio("on:docker", "es", m_es) == m_es["servicio_ya_on"].format(x="Docker")
+                      and registro.read_text() == "off ollama\n")
+            verificar("El asistente no se apaga a sí mismo",
+                      asistente._ej_servicio("off:asistente", "es", m_es) == m_es["servicio_propio"])
+            verificar("Si svc falla (p. ej. contraseña cancelada) lo dice",
+                      asistente._ej_servicio("on:mariadb", "es", m_es) == m_es["servicio_fallo"].format(x="MariaDB"))
+            verificar("Un servicio que no está en el catálogo se rechaza",
+                      asistente._ej_servicio("off:nginx", "es", m_es) == m_es["servicio_no"].format(x="nginx"))
+            asistente.COMANDO_SERVICIOS = str(Path(tmp) / "no-existe")
+            verificar("Sin el comando de servicios lo dice",
+                      asistente._ej_servicio("off:ollama", "es", m_es) == m_es["servicio_sin_comando"])
+        finally:
+            asistente.COMANDO_SERVICIOS, asistente._servicios, asistente.UNIDAD_PROPIA = previo
+    verificar("Apagar Docker entero pide confirmación; apagar Ollama no",
+              "servicio" in asistente.CONFIRMAR and bool(m_es.get("confirmar_servicio_off:docker"))
+              and not m_es.get("confirmar_servicio_off:ollama") and not m_es.get("confirmar_servicio"))
+    acc, prm = asistente.validar_interpretacion("servicio", "off:docker", "vamos a revisar eso", "vamos a revisar eso")
+    verificar("servicio propuesto por el clasificador sin nombrar un servicio se descarta", acc == "no_entendido",
+              f"({acc!r}, {prm!r})")
+    verificar("«Los servicios de AKS están caídos» no pide la lista de servicios",
+              asistente.interpretar_servicio(asistente.normalizar("Los servicios de AKS están caídos")) is None)
+    verificar("«¿Para qué sirve Ollama?» no apaga Ollama",
+              asistente.interpretar_servicio(asistente.normalizar("¿Para qué sirve Ollama?")) is None)
+    if asistente.LLM == "ollama" and asistente.llm_local():
+        asistente._servicios = (float("inf"), {"ollama": {"nombre": "ollama", "estado": "inactivo", "ram_mb": 0}})
+        verificar("Con Ollama apagado, el error del LLM dice cómo encenderlo",
+                  asistente.ejecutar("error_llm", "", "es") == m_es["llm_apagado"])
+        asistente._servicios = previo[1]
 
     return ok, fallos
 

@@ -1,0 +1,293 @@
+#!/usr/bin/python3
+"""svc: apaga y enciende a voluntad los servicios que consumen recursos.
+
+Uso:
+  svc                          lista los servicios del catálogo (estado, RAM, arranque)
+  svc lista [--json]           igual; --json para scripts y agentes
+  svc on|off|reiniciar NOMBRE...   enciende / apaga / reinicia
+  svc estado NOMBRE            estado detallado (systemctl status)
+  svc arranque NOMBRE on|off   que arranque o no con la máquina
+  svc permisos                 instala una regla polkit para on/off/reiniciar sin contraseña
+  svc -h                       esta ayuda
+
+Alias: start/encender/prender = on, stop/apagar = off, restart = reiniciar,
+list/ls = lista, status = estado, boot = arranque.
+
+Los servicios de sistema piden autenticación con la ventana de KDE (polkit),
+salvo que se haya ejecutado `svc permisos`. Códigos de salida: 0 bien,
+1 falló systemctl, 2 uso incorrecto o servicio desconocido.
+
+Para añadir servicios propios: ~/.config/svc/servicios.json con la misma forma
+que CATALOGO, por ejemplo
+  {"redis": {"alcance": "system", "unidades": ["redis.service"], "descripcion": "Redis"}}
+"""
+import json
+import os
+import subprocess
+import sys
+
+# alcance: "system" (systemctl) o "user" (systemctl --user).
+# unidades: se encienden/apagan juntas; la primera decide el estado mostrado.
+# memoria_extra: patrón de unidades cuya RAM se suma (contenedores de Docker).
+CATALOGO = {
+    "ollama": {
+        "alcance": "system",
+        "unidades": ["ollama.service"],
+        "descripcion": "LLM local (Ollama); lo usa el asistente de voz",
+        "nota_off": "el asistente de voz no podrá usar el LLM hasta encenderlo",
+    },
+    "asistente": {
+        "alcance": "user",
+        "unidades": ["asistente-voz.service"],
+        "descripcion": "Asistente de voz Hades (Whisper + Piper)",
+    },
+    "docker": {
+        "alcance": "system",
+        # el socket va incluido: si no, cualquier `docker ...` lo vuelve a levantar
+        "unidades": ["docker.service", "docker.socket", "containerd.service"],
+        "memoria_extra": "docker-*.scope",
+        "descripcion": "Docker y sus contenedores",
+    },
+    "abrt": {
+        "alcance": "system",
+        "unidades": ["abrtd.service", "abrt-journal-core.service", "abrt-oops.service",
+                     "abrt-xorg.service", "abrt-vmcore.service"],
+        "descripcion": "Informes automáticos de fallos (ABRT)",
+    },
+    "autoperfil": {
+        "alcance": "user",
+        "unidades": ["autoperfil.service"],
+        "descripcion": "Cambio automático balanced/performance",
+    },
+    "bluetooth": {
+        "alcance": "system",
+        "unidades": ["bluetooth.service"],
+        "descripcion": "Bluetooth",
+    },
+    "cups": {
+        "alcance": "system",
+        "unidades": ["cups.service", "cups.socket", "cups.path"],
+        "descripcion": "Impresión (CUPS)",
+    },
+    "libvirt": {
+        "alcance": "system",
+        "unidades": ["libvirtd.service", "libvirtd.socket", "libvirtd-ro.socket",
+                     "libvirtd-admin.socket"],
+        "descripcion": "Máquinas virtuales (libvirt)",
+    },
+    "mariadb": {
+        "alcance": "system",
+        "unidades": ["mariadb.service"],
+        "descripcion": "Base de datos MariaDB",
+    },
+}
+
+ALIAS = {
+    "on": "on", "start": "on", "encender": "on", "prender": "on",
+    "off": "off", "stop": "off", "apagar": "off",
+    "reiniciar": "reiniciar", "restart": "reiniciar",
+    "lista": "lista", "list": "lista", "ls": "lista",
+    "estado": "estado", "status": "estado",
+    "arranque": "arranque", "boot": "arranque",
+    "permisos": "permisos",
+}
+VERBO = {"on": "start", "off": "stop", "reiniciar": "restart"}
+REGLA_POLKIT = "/etc/polkit-1/rules.d/50-svc.rules"
+
+
+def cargar_catalogo():
+    propio = os.path.expanduser("~/.config/svc/servicios.json")
+    catalogo = dict(CATALOGO)
+    if os.path.exists(propio):
+        with open(propio) as f:
+            catalogo.update(json.load(f))
+    return catalogo
+
+
+def systemctl(alcance, *args, capturar=True):
+    cmd = ["systemctl"] + (["--user"] if alcance == "user" else []) + list(args)
+    return subprocess.run(cmd, capture_output=capturar, text=True)
+
+
+def propiedades(alcance, unidades, props):
+    """{unidad: {prop: valor}} con una sola llamada a systemctl show."""
+    r = systemctl(alcance, "show", "-p", ",".join(["Id"] + props), *unidades)
+    res = {}
+    for bloque in r.stdout.strip().split("\n\n"):
+        d = dict(linea.split("=", 1) for linea in bloque.splitlines() if "=" in linea)
+        if "Id" in d:
+            res[d["Id"]] = d
+    return res
+
+
+def memoria(valor):
+    try:
+        n = int(valor)
+    except (TypeError, ValueError):
+        return 0
+    return 0 if n >= 2**63 else n          # "infinito" = no medido
+
+
+def info(nombre, s):
+    unidades = s["unidades"]
+    p = propiedades(s["alcance"], unidades,
+                    ["LoadState", "ActiveState", "UnitFileState", "MemoryCurrent"])
+    instaladas = [u for u in unidades if p.get(u, {}).get("LoadState") == "loaded"]
+    if not instaladas:
+        return None
+    principal = p[instaladas[0]]
+    estados = {p[u]["ActiveState"] for u in instaladas}
+    if principal["ActiveState"] == "failed":
+        estado = "fallido"
+    elif principal["ActiveState"] in ("active", "activating", "reloading"):
+        estado = "activo"
+    elif "active" in estados:
+        estado = "parcial"                   # p. ej. solo el socket escuchando
+    else:
+        estado = "inactivo"
+    ram = sum(memoria(p[u].get("MemoryCurrent")) for u in instaladas)
+    if s.get("memoria_extra"):
+        r = systemctl(s["alcance"], "list-units", s["memoria_extra"], "--plain",
+                      "--no-legend", "--state=active")
+        extra = [l.split()[0] for l in r.stdout.splitlines() if l.strip()]
+        if extra:
+            ram += sum(memoria(d.get("MemoryCurrent"))
+                       for d in propiedades(s["alcance"], extra, ["MemoryCurrent"]).values())
+    arranque = "sí" if any(p[u]["UnitFileState"] == "enabled" for u in instaladas) else "no"
+    return {
+        "nombre": nombre,
+        "alcance": s["alcance"],
+        "estado": estado,
+        "ram_mb": round(ram / 1048576),
+        "arranque": arranque,
+        "descripcion": s.get("descripcion", ""),
+        "unidades": instaladas,
+    }
+
+
+def lista(catalogo, como_json):
+    filas = [f for f in (info(n, s) for n, s in catalogo.items()) if f]
+    if como_json:
+        print(json.dumps(filas, ensure_ascii=False, indent=2))
+        return 0
+    print(f"{'SERVICIO':<11} {'ESTADO':<9} {'RAM':>8}  {'ARRANQUE':<8}  DESCRIPCIÓN")
+    for f in sorted(filas, key=lambda f: -f["ram_mb"]):
+        ram = f"{f['ram_mb']} MB" if f["estado"] in ("activo", "parcial") else "-"
+        print(f"{f['nombre']:<11} {f['estado']:<9} {ram:>8}  {f['arranque']:<8}  {f['descripcion']}")
+    return 0
+
+
+def resolver(catalogo, nombres):
+    desconocidos = [n for n in nombres if n not in catalogo]
+    if desconocidos:
+        print(f"svc: servicio desconocido: {', '.join(desconocidos)}. "
+              f"Disponibles: {', '.join(catalogo)}", file=sys.stderr)
+        sys.exit(2)
+    return nombres
+
+
+def accion(catalogo, orden, nombres):
+    codigo = 0
+    for nombre in resolver(catalogo, nombres):
+        s = catalogo[nombre]
+        f = info(nombre, s)
+        if not f:
+            print(f"{nombre}: no está instalado", file=sys.stderr)
+            codigo = 1
+            continue
+        r = systemctl(s["alcance"], VERBO[orden], *f["unidades"])
+        if r.returncode:
+            print(f"{nombre}: falló systemctl {VERBO[orden]}: {r.stderr.strip()}", file=sys.stderr)
+            codigo = 1
+            continue
+        f = info(nombre, s)
+        print(f"{nombre}: {f['estado']}")
+        if orden == "off" and s.get("nota_off"):
+            print(f"  nota: {s['nota_off']}")
+    return codigo
+
+
+def arranque(catalogo, nombre, valor):
+    resolver(catalogo, [nombre])
+    if valor not in ("on", "off", "sí", "si", "no"):
+        print("svc: uso: svc arranque NOMBRE on|off", file=sys.stderr)
+        return 2
+    s = catalogo[nombre]
+    f = info(nombre, s)
+    if not f:
+        print(f"{nombre}: no está instalado", file=sys.stderr)
+        return 1
+    verbo = "enable" if valor in ("on", "sí", "si") else "disable"
+    r = systemctl(s["alcance"], verbo, *f["unidades"])
+    if r.returncode:
+        print(f"{nombre}: falló systemctl {verbo}: {r.stderr.strip()}", file=sys.stderr)
+        return 1
+    print(f"{nombre}: arranque {'sí' if verbo == 'enable' else 'no'}")
+    return 0
+
+
+def permisos(catalogo):
+    unidades = sorted(u for s in catalogo.values() if s["alcance"] == "system"
+                      for u in s["unidades"])
+    usuario = os.environ.get("USER") or os.getlogin()
+    regla = f"""// Generado por svc: {usuario} puede encender/apagar/reiniciar estas unidades
+// sin contraseña (habilitar/deshabilitar el arranque sigue pidiéndola).
+polkit.addRule(function(action, subject) {{
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == {json.dumps(usuario)} && subject.local && subject.active) {{
+        var unidades = {json.dumps(unidades)};
+        var verbos = ["start", "stop", "restart"];
+        if (unidades.indexOf(action.lookup("unit")) >= 0 &&
+            verbos.indexOf(action.lookup("verb")) >= 0) {{
+            return polkit.Result.YES;
+        }}
+    }}
+}});
+"""
+    r = subprocess.run(["pkexec", "tee", REGLA_POLKIT], input=regla, text=True,
+                       stdout=subprocess.DEVNULL)
+    if r.returncode:
+        print("svc: no se pudo instalar la regla polkit", file=sys.stderr)
+        return 1
+    print(f"regla instalada en {REGLA_POLKIT} ({len(unidades)} unidades). "
+          f"Para quitarla: sudo rm {REGLA_POLKIT}")
+    return 0
+
+
+def main(args):
+    catalogo = cargar_catalogo()
+    como_json = "--json" in args
+    args = [a for a in args if a != "--json"]
+    if not args:
+        return lista(catalogo, como_json)
+    if args[0] in ("-h", "--help", "ayuda"):
+        print(__doc__.strip())
+        return 0
+    orden = ALIAS.get(args[0])
+    if not orden:
+        print(f"svc: orden desconocida {args[0]!r} (svc -h para ayuda)", file=sys.stderr)
+        return 2
+    resto = args[1:]
+    if orden == "lista":
+        return lista(catalogo, como_json)
+    if orden == "permisos":
+        return permisos(catalogo)
+    if not resto:
+        print(f"svc: falta el nombre del servicio. Disponibles: {', '.join(catalogo)}",
+              file=sys.stderr)
+        return 2
+    if orden == "estado":
+        resolver(catalogo, resto[:1])
+        s = catalogo[resto[0]]
+        systemctl(s["alcance"], "status", "--no-pager", *s["unidades"], capturar=False)
+        return 0
+    if orden == "arranque":
+        if len(resto) != 2:
+            print("svc: uso: svc arranque NOMBRE on|off", file=sys.stderr)
+            return 2
+        return arranque(catalogo, *resto)
+    return accion(catalogo, orden, resto)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

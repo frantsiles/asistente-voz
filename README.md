@@ -59,6 +59,7 @@ flowchart LR
 | "Bloquea la pantalla" | "Lock the screen" | Bloquea la sesión |
 | "Actualiza todo" / "Actualiza el sistema" | "Update everything" | Abre la terminal con la actualización del sistema |
 | "Limpia la caché de paquetes" | "Clean the package cache" | Abre la terminal con `yay -Sc` / `paccache -r` / `dnf clean packages` y `flatpak uninstall --unused` |
+| "Apaga Ollama" / "Enciende el bluetooth" / "Apaga el servicio de Docker" / "¿Qué servicios están encendidos?" | "Turn off the Ollama service" / "Which services are running?" | Enciende, apaga o reinicia un [servicio](#servicios) con `svc`; al apagar dice cuánta RAM liberó |
 | "Suspende / reinicia / apaga el equipo" | "Shut down the computer" | Pregunta siempre antes. Reiniciar y apagar cierran la sesión de KDE con orden |
 | "¿Qué es la inyección de dependencias?" | "What is a race condition?" | Respuesta breve hablada |
 
@@ -140,7 +141,7 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `apps_terminal` | `htop`, `btop`, `lazygit`… | Herramientas de consola que se pueden abrir (solo las instaladas) |
 | `alias_apps` | `{}` | Nombres extra → id del `.desktop`, p. ej. `{"mongo": "com.mongodb.Compass"}` |
 | `tareas` | `{}` | Comandos que se pueden ejecutar por voz, p. ej. `{"tests de validaciones": "dotnet test ~/Proyectos/Validaciones"}`. Nada fuera de esta lista |
-| `confirmar` | `["docker_detener", "docker_reiniciar"]` | Acciones que piden confirmación por voz antes de ejecutarse |
+| `confirmar` | `["docker_detener", "docker_reiniciar", "servicio"]` | Acciones que piden confirmación por voz antes de ejecutarse |
 | `llm` | `ollama` | Proveedor del modelo de lenguaje: `ollama`, `openai` (cualquier servidor compatible) o `ninguno` |
 | `llm_url` | según `llm` | `http://127.0.0.1:11434` (Ollama) o `http://127.0.0.1:8080/v1` (llama-server) |
 | `llm_clave_env` | — | Nombre de la variable de entorno con la clave de la API, si el servidor la pide. La clave nunca va en `config.json` |
@@ -160,11 +161,29 @@ Edita `config.json` (no se sube al repo; parte de `config.example.json`):
 | `whisper_precision` | `int8_float16` | Precisión en la GPU NVIDIA. `float16` ocupa el doble de VRAM |
 | `comando_actualizar` | se detecta | Comando de "actualiza todo", p. ej. `"yay -Syu; flatpak update"`. Sin definir: `yay`/`paru`/`pacman` en Arch o `dnf` en Fedora, más `flatpak update` |
 | `comando_limpiar` | se detecta | Comando de "limpia la caché de paquetes". Sin definir: `yay -Sc`/`paru -Sc`/`paccache -r`/`pacman -Sc` en Arch o `dnf clean packages` en Fedora, más `flatpak uninstall --unused` |
+| `comando_servicios` | `svc` | Comando que enciende y apaga [servicios](#servicios). Tiene que entender `lista --json` y `on`/`off`/`reiniciar NOMBRE` |
+| `alias_servicios` | `{}` | Nombres extra → servicio del catálogo, p. ej. `{"basededatos": "mariadb"}` (clave sin espacios ni tildes) |
 | `hablar` | `true` | `false` = solo notificaciones, sin voz |
 | `nombre` | `Nova` | Nombre del asistente en notificaciones y respuestas |
 | `palabra_activacion` | `""` | Frase que activa el asistente, p. ej. `"hades"`. `""` = solo atajo |
 | `variantes_activacion` | `oye …`, `hey …` | Otras formas aceptadas |
 | `umbral_activacion` | `0.87` | Similitud mínima (0–1); más alto = menos activaciones falsas |
+
+### Servicios
+
+`herramientas/svc` enciende y apaga los servicios que más recursos consumen. Lo puedes usar desde la terminal, desde un agente o por voz, y `instalar.sh` lo enlaza en `~/.local/bin/svc` si no tienes ya uno propio:
+
+```
+svc                       # estado, RAM y arranque de cada servicio
+svc off ollama            # también: on, reiniciar; varios a la vez
+svc arranque docker off   # que no arranque con el equipo
+svc lista --json          # para scripts y agentes (salida 0 = bien, 1 = falló, 2 = uso o servicio desconocido)
+svc permisos              # opcional: regla polkit para encender/apagar sin contraseña
+```
+
+El catálogo trae Ollama, Docker (con su socket y la RAM de los contenedores), ABRT, CUPS, Bluetooth, libvirt, MariaDB, el propio asistente y autoperfil. Solo se muestran los que están instalados. Se amplía con `~/.config/svc/servicios.json`. Los servicios de sistema piden la contraseña con la ventana de KDE, salvo que hayas ejecutado `svc permisos`.
+
+Por voz: «apaga Ollama», «reinicia el servicio de Ollama», «¿qué servicios están encendidos?». «Apaga Docker» a secas sigue deteniendo los contenedores del `compose`; para apagar el servicio entero hay que decir «el servicio de Docker», y pide confirmación porque se detienen todos los contenedores. El asistente no se apaga ni se reinicia a sí mismo. Si una pregunta falla porque Ollama está apagado, lo dice y te propone encenderlo.
 
 ### Cómo interpreta las frases
 
@@ -307,7 +326,7 @@ wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25
 
 ```
 asistente.py            # el asistente (configuración, reglas, acciones)
-herramientas/           # imagen_fooocus.py / imagen_openvino.py: generan las imágenes en un proceso aparte
+herramientas/           # imagen_fooocus.py / imagen_openvino.py: generan las imágenes en un proceso aparte; svc: servicios
 config.example.json     # plantilla de configuración
 TODO.md                 # ideas y próximos ajustes
 CHANGELOG.md            # cambios por fecha
