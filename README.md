@@ -183,6 +183,8 @@ svc permisos              # opcional: regla polkit para encender/apagar sin cont
 
 El catálogo trae Ollama, Docker (con su socket y la RAM de los contenedores), ABRT, CUPS, Bluetooth, libvirt, MariaDB, el propio asistente y autoperfil. Solo se muestran los que están instalados. Se amplía con `~/.config/svc/servicios.json`. Los servicios de sistema piden la contraseña con la ventana de KDE, salvo que hayas ejecutado `svc permisos`.
 
+La referencia de `svc` está en [linux-utils](https://github.com/frantsiles/linux-utils/tree/main/scripts/system/svc): ahí está el contrato que tiene que cumplir cualquier otro `svc` para funcionar con el asistente (`comando_servicios`) y `probar-svc`, que lo comprueba sin apagar nada.
+
 Por voz: «apaga Ollama», «reinicia el servicio de Ollama», «¿qué servicios están encendidos?». «Apaga Docker» a secas sigue deteniendo los contenedores del `compose`; para apagar el servicio entero hay que decir «el servicio de Docker», y pide confirmación porque se detienen todos los contenedores. El asistente no se apaga ni se reinicia a sí mismo. Si una pregunta falla porque Ollama está apagado, lo dice y te propone encenderlo.
 
 ### Cómo interpreta las frases
