@@ -37,6 +37,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - Repositorio protegido en GitHub: `main` sin force-push ni borrado, escaneo de secretos con bloqueo en el push, alertas y actualizaciones de seguridad de Dependabot.
 
 ### Corregido
+- **Ruido ambiente y conversaciones de fondo**:
+  - Silero VAD detectaba voces lejanas tras terminar de hablar el usuario y mantenía la grabación abierta hasta `MAX_GRABACION` (15 s): ahora se exige también energía relativa a la voz cercana (`voz_rms` con histéresis).
+  - La escucha por palabra de activación ya no baja el volumen del sistema antes de confirmar el nombre, fuerza español en el filtro rápido, exige similitud en el final de la palabra y descarta falsos amigos comunes («haces», «hace», «además»…), evitando falsos positivos en entornos con gente hablando.
+  - Con muchos repositorios en `~/git`, `initial_prompt` hacía fallar a `openvino-genai` (`Language token id -1 not found in lang_to_id map`) o entraba en bucles de repetición: se limita la pista a los 4 repositorios más recientes y se reintenta en español sin `initial_prompt` si se detecta un bucle.
+  - Nuevas variantes de transcripción real con ruido («visorcode», «ahora aviso», «puerto a papeles», «presúmeme», «detállame», «genérame una imagen…») y salvaguarda de evidencia en `multimedia`.
 - Sin `notify-send` (libnotify) o sin `pw-play`, el asistente fallaba en la primera notificación o sonido: ahora sigue funcionando sin ellos.
 - «¿Cómo escribo una función…?» se interpretaba como «explica lo que copié»: más verbos en primera persona y «how to» cuentan como pregunta.
 - «Cierra y» (frase cortada) cerraba la ventana actual.

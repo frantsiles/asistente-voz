@@ -149,7 +149,8 @@ APPS_TERMINAL = CFG.get("apps_terminal", ["htop", "btop", "top", "nvtop", "lazyg
 # los nombres cambian entre distribuciones (Fedora/Arch) y entre paquete nativo y Flatpak.
 ALIAS_APPS = {
     **dict.fromkeys(["vscode", "vs", "code", "visualstudiocode", "visualcode", "visualstudio",
-                     "visualestudiocode", "vscodigo", "codigo"], ("com.microsoft.VSCode", "code", "code-oss")),
+                     "visualestudiocode", "visorcode", "visual", "vscodigo", "codigo"],
+                    ("com.microsoft.VSCode", "code", "code-oss")),
     **dict.fromkeys(["navegador", "browser", "webbrowser", "elnavegador"], ("org.mozilla.firefox", "firefox")),
     **dict.fromkeys(["terminal", "consola", "laterminal", "kiti", "kity", "kitti"], ("kitty", "org.kde.konsole")),
     **dict.fromkeys(["archivos", "explorador", "exploradordearchivos", "files", "filemanager"], "org.kde.dolphin"),
@@ -454,15 +455,37 @@ def palabras_norm(texto):
     return re.sub(r"[^a-z0-9 ]", " ", normalizar(texto)).split()
 
 
+RELLENO_ACTIVACION = {"eh", "em", "ah", "oh", "mm", "mmm", "oye", "hey", "hola", "bueno", "este"}
+# Palabras frecuentes en español muy parecidas a nombres de activación cortos («¿qué haces?», «además» vs «Hades»)
+FALSOS_ACTIVACION = {"haces", "hace", "hacer", "ademas", "habia", "haber", "has", "han", "hay"}
+
+
 def puntaje_activacion(texto):
     """(similitud 0-1, nº de palabras que ocupa) de la palabra de activación al inicio del texto."""
     p = palabras_norm(texto)
     mejor = (0.0, 0)
+    base_act = clave(PALABRA_ACTIVACION)
+    falsos = FALSOS_ACTIVACION - {base_act}
     for frase in [PALABRA_ACTIVACION] + VARIANTES_ACTIVACION:
-        objetivo = "".join(palabras_norm(frase))
-        for i in range(min(3, len(p))):       # tolera relleno antes: "eh, hey nova"
-            for k in range(1, len(palabras_norm(frase)) + 2):
-                r = difflib.SequenceMatcher(None, "".join(p[i:i + k]), objetivo).ratio()
+        obj_pal = palabras_norm(frase)
+        objetivo = "".join(obj_pal)
+        min_largo = max(3, int(len(objetivo) * 0.65))
+        for i in range(min(3, len(p))):       # tolera muletillas antes: "eh, hey nova"
+            if i > 0 and not all(w in RELLENO_ACTIVACION for w in p[:i]):
+                break
+            for k in range(1, len(obj_pal) + 2):
+                tramo = p[i:i + k]
+                if any(w in falsos for w in tramo):
+                    continue
+                cand = "".join(tramo)
+                if len(cand) < min_largo:
+                    continue
+                if base_act and max(
+                    difflib.SequenceMatcher(None, "".join(tramo[-m:]), base_act).ratio()
+                    for m in (1, min(2, len(tramo)))
+                ) < 0.70:
+                    continue
+                r = difflib.SequenceMatcher(None, cand, objetivo).ratio()
                 if r > mejor[0]:
                     mejor = (r, i + k)
     return mejor
@@ -777,16 +800,17 @@ class Microfono:
 
 
 def grabar(detener, espera_inicio=ESPERA_INICIO, fuente=None, previo=(), hablando=False, silencio=0.0,
-           umbral=None):
+           umbral=None, bajar_volumen=True):
     """Graba hasta detectar el fin de la frase. Por defecto abre su propio pw-record; con la palabra de
     activación lee de `fuente` (Microfono) y, con `previo` y `hablando`, continúa una frase ya empezada."""
-    vol_prev = _volumen_sistema()
+    vol_prev = _volumen_sistema() if bajar_volumen else None
     if vol_prev and vol_prev > 0.20:
         VOLUMEN_GUARDADO.write_text(str(vol_prev))
         subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "0.20"])
     fuente = fuente or pw_record()
     continua = hablando
     bloques, ruido, n = list(previo), [], 0
+    voz_rms = float(np.percentile([nivel(b) for b in previo], 80)) if previo else 0.0
     calibrar = umbral is None and not continua
     umbral = umbral or 400.0
     estado_vad = _VAD.nuevo_estado() if _VAD.session else None
@@ -797,13 +821,16 @@ def grabar(detener, espera_inicio=ESPERA_INICIO, fuente=None, previo=(), habland
             bloques.append(a)
             n += 1
             t = n * BLOQUE / RATE
+            rms = nivel(a)
             if estado_vad is not None:
                 prob, estado_vad = _VAD.probabilidad(a, estado_vad)
                 if t < 0.15 and not continua:  # descarta el eco inmediato del sonido de inicio
                     continue
-                hay_voz = prob >= 0.5
+                # Mientras habla, exige energía compatible con el hablante principal: en un lugar con gente
+                # hablando de fondo, sus voces más lejanas no deben impedir el cierre de la frase.
+                factor = 0.55 if silencio >= 0.15 else (0.18 if prob >= 0.85 else 0.30)
+                hay_voz = prob >= 0.5 and (not hablando or rms >= max(400.0, factor * voz_rms))
             else:
-                rms = nivel(a)
                 if calibrar and t < 0.3:      # calibración del ruido de fondo (fallback sin ONNX)
                     ruido.append(rms)
                     umbral = max(400.0, 3 * float(np.percentile(ruido, 20)))
@@ -811,6 +838,9 @@ def grabar(detener, espera_inicio=ESPERA_INICIO, fuente=None, previo=(), habland
                 hay_voz = rms > umbral
             if hay_voz:
                 hablando, silencio = True, 0.0
+                if rms >= 0.45 * voz_rms:
+                    voz_rms = (0.5 * voz_rms + 0.5 * rms if rms > voz_rms
+                               else max(voz_rms * 0.995, 0.85 * voz_rms + 0.15 * rms)) if voz_rms else rms
             elif hablando:
                 silencio += BLOQUE / RATE
             if hablando and silencio >= SILENCIO_FIN:
@@ -1266,15 +1296,18 @@ def resolver_contenedor(pedido, aproximado=False):
 
 
 def pista_whisper():
-    """Vocabulario de contexto para Whisper. Lista de términos, no frases: con frases de ejemplo
-    Whisper tiende a cortar las transcripciones."""
-    nombres = [d.name for d in proyectos()]
+    """Vocabulario de contexto para Whisper. Lista breve de términos (no todos los repos): una pista demasiado
+    larga hace que OpenVINO GenAI falle al detectar el idioma o repita nombres de repositorios ante ruido."""
+    recientes = sorted(proyectos(), key=lambda d: (d / ".git").stat().st_mtime, reverse=True)[:4]
+    nombres = [d.name for d in recientes]
     # "Empresa.Modulo.Sub" -> "Modulo Sub" cuando el prefijo se repite en varios repos
-    prefijos = [n.split(".")[0] for n in nombres if "." in n]
+    todos = [d.name for d in proyectos()]
+    prefijos = [n.split(".")[0] for n in todos if "." in n]
     nombres = [n.split(".", 1)[1] if "." in n and prefijos.count(n.split(".")[0]) >= 3 else n for n in nombres]
     nombres = [n.replace(".", " ") for n in nombres]
+    extra = ", " + ", ".join(n for n in nombres if n) if nombres else ""
     return (f"{NOMBRE}, VS Code, Visual Studio Code, Firefox, kitty, htop, btop, nvtop, KWrite, lazygit, lazydocker, "
-            "MongoDB Compass, Docker, " + ", ".join(n for n in nombres if n))
+            f"MongoDB Compass, Docker{extra}")
 
 
 NAVEGADORES_MPRIS = ("edge", "firefox", "chromium", "chrome", "brave", "plasma-browser-integration")
@@ -2102,7 +2135,7 @@ PIDE_ESCALAR_IMAGEN = (
 # «Genera una imagen de…», «dibújame…». «Crea una imagen de docker» o «hazle superresolución» son otra cosa
 PIDE_IMAGEN = (NO_ES_PREGUNTA + r"(?!.*\b(docker|contenedor\w*|container\w*|iso|disco|disk|podman|"
                r"super\s*resolucion|super\s*resolution|reescala\w*|upscal\w*)\b)"
-               r".*\b(genera\w*|crea\w*|haz|hazme|dibuja\w*|pinta\w*|ilustra\w*|generate|create|make|draw|paint)\b"
+               r".*\b(gener[aeo]\w*|genier\w*|crea\w*|haz|hazme|dibuja\w*|pinta\w*|ilustra\w*|generate|create|make|draw|paint)\b"
                r".*\b(imagen\w*|foto\w*|dibujo\w*|ilustracion\w*|image\w*|picture\w*|photo\w*|drawing\w*|"
                r"illustration\w*|painting\w*)\b")
 # «Redacta…», «escríbeme un correo…», «write a function…». «Escribe hola mundo» sigue siendo dictado
@@ -2252,12 +2285,12 @@ REGISTRO_ACCIONES = [
                   ("resume lo que copié", "resumir"), ("summarize the clipboard", "resumir"),
                   ("traduce lo que copié", "traducir"), ("translate the clipboard", "traducir")),
         prompt="usar el texto copiado en el portapapeles (clipboard). parametro = leer | resumir | traducir | explicar",
-        evidencia=r"porta\s*papeles|clipboard|copi\w*|copied",
+        evidencia=r"porta\s*papel\w*|puerto\s*a\s*papel\w*|clipboard|copi\w*|copied",
         reglas=(
-            (r"\b(lee\w*|leame|leer|dime|read)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "leer"),
-            (r"\b(resum\w*|summarize)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "resumir"),
-            (r"\b(traduc\w*|translate)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "traducir"),
-            (r"\b(explic\w*|explain)\b.*?\b(copi\w*|porta\s*papeles|clipboard|copied)\b", "explicar"),
+            (r"\b(lee\w*|leame|leer|dime|read)\b.*?\b(copi\w*|porta\s*papel\w*|puerto\s*a\s*papel\w*|clipboard|copied)\b", "leer"),
+            (r"\b(p?resum\w*|summarize)\b.*?\b(copi\w*|porta\s*papel\w*|puerto\s*a\s*papel\w*|clipboard|copied)\b", "resumir"),
+            (r"\b(traduc\w*|translate)\b.*?\b(copi\w*|porta\s*papel\w*|puerto\s*a\s*papel\w*|clipboard|copied)\b", "traducir"),
+            (r"\b(explic\w*|detall\w*|describ\w*|analiz\w*|explain)\b.*?\b(copi\w*|porta\s*papel\w*|puerto\s*a\s*papel\w*|clipboard|copied)\b", "explicar"),
         ),
         ejecutor=_ej_portapapeles,
     ),
@@ -2384,13 +2417,15 @@ REGISTRO_ACCIONES = [
     ),
     DefinicionAccion(
         nombre="multimedia",
+        riesgo=True,
         ejemplos=(("pausa la música", "pausa"), ("pause", "pausa"), ("detén la canción", "pausa"),
                   ("para el reproductor", "pausa"), ("reanuda la música", "reproducir"), ("play", "reproducir"),
                   ("continúa la canción", "reproducir"), ("siguiente canción", "siguiente"),
                   ("next song", "siguiente"), ("salta esta canción", "siguiente"),
                   ("canción anterior", "anterior"), ("previous track", "anterior")),
         prompt="parametro = pausa | reproducir | siguiente | anterior",
-        evidencia=r"musica|music|cancion|song|pausa|pause|reproduc|play|tema|track|siguiente|next|anterior|previous",
+        evidencia=(r"musica|music|cancion|song|pausa|pause|reproduc|play|tema|track|siguiente|next|anterior|previous|"
+                   r"reanuda|continua|resume|salta|skip|deten|stop"),
         reglas=(
             (r"\b(pausa|pausar|deten la musica|para la musica|pause)\b", "pausa"),
             (r"\b(pon|poner|reproduce|reproducir|escuchar)\b.*\b(musica\w*|cancion\w*)|\b(play|listen to) (some )?music\b|^(reproduce|play)\b[!.?]*$", "reproducir"),
@@ -2697,8 +2732,9 @@ def corregir_sentido(n, param, accion):
     return param
 
 # Errores recurrentes de Whisper con esta voz/micrófono:
-# "Abre" -> "Ahora", "A ver", "Aurek"…; "Cierra" -> "Sierra", "Cierre"…
-ABRE_MAL_OIDO = r"^(ahora(\s+es)?|aurea|aurek|aure|a ver|abra|habre|abri|abrir|ahi|haber|avril|abril|open up)\b,?\s*(a\s+)?"
+# "Abre" -> "Ahora", "A ver", "Aura", "Aurek"…; "Cierra" -> "Sierra", "Cierre"…
+ABRE_MAL_OIDO = (r"^(ahora(\s+es|\s+aviso(\s+al?)?)?|aura(\s+y)?|aurea|aurek|aure|a ver|abra|habre|abri|abrir|"
+                 r"ahi|haber|avril|abril|open up)(\b,?\s*(a\s+)?|(?=[a-z]{3}))")
 CIERRA_MAL_OIDO = r"^(sierra|cierre|cierras|serra)\b,?\s*"
 
 
@@ -3097,18 +3133,28 @@ class WhisperOpenVINO:
         return generar_openvino(self.pipe, audio, initial_prompt=pista), None
 
 
+def tiene_bucle(texto):
+    """Detecta cuando Whisper entra en bucle con audio ruidoso («HWite, HWite…», «de la Comunidad de la…»)."""
+    palabras = re.findall(r"\w+", texto.lower())
+    if len(palabras) >= 6 and len(set(palabras)) <= max(2, len(palabras) // 4):
+        return True
+    return bool(re.search(r"(\b\w[\w\s]{1,25}?)(?:[,\s]+\1){3,}", texto, re.IGNORECASE))
+
+
 def generar_openvino(pipe, audio, **kw):
     """Whisper de OpenVINO con detección automática de idioma. A veces falla al detectarlo
-    ("Language token id -1") o transcribe en otro alfabeto (griego, cirílico, árabe…);
-    entonces se reintenta en español."""
+    ("Language token id -1"), transcribe en otro alfabeto (griego, cirílico, árabe…) o entra en bucle
+    por la pista; entonces se reintenta en español sin initial_prompt."""
     try:
         texto = pipe.generate(audio.tolist(), task="transcribe", **kw).texts[0].strip()
-        if not texto or re.search(r"[a-zA-Z]", texto):
+        if (not texto or re.search(r"[a-zA-Z]", texto)) and not tiene_bucle(texto):
             return texto
     except RuntimeError as e:
         if "Language token" not in str(e):
             raise
-    return pipe.generate(audio.tolist(), task="transcribe", language="<|es|>", **kw).texts[0].strip()
+    kw_es = {k: v for k, v in kw.items() if k not in ("initial_prompt", "language")}
+    texto = pipe.generate(audio.tolist(), task="transcribe", language="<|es|>", **kw_es).texts[0].strip()
+    return "" if tiene_bucle(texto) else texto
 
 
 class WhisperCUDA:
@@ -3150,9 +3196,11 @@ class WhisperActivacion:
             self.pipe = openvino_genai.WhisperPipeline(str(WHISPER_ACTIVACION), "CPU")
 
     def transcribir(self, audio):
+        lang = IDIOMAS[0] if IDIOMAS else "es"
         if self.pipe:
-            return generar_openvino(self.pipe, audio)
-        segmentos, _ = self.modelo.transcribe(audio, task="transcribe", beam_size=1, condition_on_previous_text=False)
+            return generar_openvino(self.pipe, audio, language=f"<|{lang}|>")
+        segmentos, _ = self.modelo.transcribe(audio, task="transcribe", language=lang,
+                                              beam_size=1, condition_on_previous_text=False)
         return "".join(s.text for s in segmentos).strip()
 
 
@@ -3246,12 +3294,12 @@ class Asistente:
         """Termina la frase que empezó con la posible palabra de activación y la confirma con el Whisper
         principal. Devuelve (texto, idioma, segundos) del comando, o None si no era la palabra.
         Mientras no está confirmado solo hay avisos visuales y discretos: en una reunión, cada falso
-        candidato sonaría."""
+        candidato sonaría o bajaría el volumen del sistema."""
         notificar(f"¿{NOMBRE}? Te escucho… / Listening…", "", segundos=15, transitoria=True)
         self.escuchando = True
         self.detener.clear()
         audio = grabar(self.detener, fuente=self.mic.bloques(), previo=previo, hablando=True, silencio=silencio,
-                       umbral=umbral)
+                       umbral=umbral, bajar_volumen=False)
         self.escuchando = False
         if audio is None:
             cerrar_notificacion()
@@ -3404,7 +3452,7 @@ class Asistente:
     def escuchar_activacion(self):
         """Hilo: busca la palabra de activación al inicio de cada frase que se escucha."""
         previo = collections.deque(maxlen=10)          # 0,3 s antes de que empiece la voz
-        seg, silencio, piso, revisado = [], 0.0, 100.0, False
+        seg, silencio, piso, voz_rms, revisado = [], 0.0, 100.0, 0.0, False
         estado_vad = _VAD.nuevo_estado() if _VAD.session else None
         vaciar = False
         ventana = int(VENTANA_ACTIVACION * RATE / BLOQUE)
@@ -3412,7 +3460,7 @@ class Asistente:
             # Atendiendo un comando o hablando (p. ej. un temporizador): no toca el micrófono
             if self.ocupado.locked() or self.voz.hablando:
                 time.sleep(0.05)
-                seg, silencio, revisado = [], 0.0, False
+                seg, silencio, voz_rms, revisado = [], 0.0, 0.0, False
                 previo.clear()
                 vaciar = True
                 continue
@@ -3428,7 +3476,8 @@ class Asistente:
             umbral = max(400.0, 3 * piso)
             if estado_vad is not None:                 # Silero no confunde música o ruido con voz
                 prob, estado_vad = _VAD.probabilidad(a, estado_vad)
-                hay_voz = prob >= 0.5
+                factor = 0.55 if silencio >= 0.15 else (0.18 if prob >= 0.85 else 0.30)
+                hay_voz = prob >= 0.5 and rms >= (max(400.0, factor * voz_rms) if seg else 400.0)
             else:
                 hay_voz = rms > umbral
             if hay_voz:
@@ -3436,6 +3485,9 @@ class Asistente:
                     seg = list(previo)
                 seg.append(a)
                 silencio = 0.0
+                if rms >= 0.45 * voz_rms:
+                    voz_rms = (0.5 * voz_rms + 0.5 * rms if rms > voz_rms
+                               else max(voz_rms * 0.995, 0.85 * voz_rms + 0.15 * rms)) if voz_rms else rms
             elif seg:
                 seg.append(a)
                 silencio += BLOQUE / RATE
@@ -3458,8 +3510,8 @@ class Asistente:
                         except Exception as e:
                             log(f"error: {e}")
                         fin = True
-            if fin or dur > MAX_GRABACION:
-                seg, silencio, revisado = [], 0.0, False
+            if fin or (revisado and dur >= 4.0) or dur > MAX_GRABACION:
+                seg, silencio, voz_rms, revisado = [], 0.0, 0.0, False
                 previo.clear()
 
     def correr(self):

@@ -27,6 +27,8 @@ APPS_BASE = {
     "btop": asistente.App("btop", "btop", ["kitty", "-e", "btop"]),
     "pittop": asistente.App("btop", "btop", ["kitty", "-e", "btop"]),
     "htop": asistente.App("htop", "htop", ["kitty", "-e", "htop"]),
+    "visualcode": asistente.App("com.microsoft.VSCode", "Visual Studio Code", ["code"]),
+    "visorcode": asistente.App("com.microsoft.VSCode", "Visual Studio Code", ["code"]),
 }
 
 TAREAS_BASE = {
@@ -694,6 +696,26 @@ else:
         verificar("Con Ollama apagado, el error del LLM dice cómo encenderlo",
                   asistente.ejecutar("error_llm", "", "es") == m_es["llm_apagado"])
         asistente._servicios = previo[1]
+
+    # 15. Ruido de fondo: filtro de activación y bucles de repetición de Whisper
+    act_prev = asistente.PALABRA_ACTIVACION, asistente.VARIANTES_ACTIVACION
+    try:
+        asistente.PALABRA_ACTIVACION = "hades"
+        asistente.VARIANTES_ACTIVACION = ["oye hades", "hey hades"]
+        for falsa in ("¿Qué haces?", "Mami, ¿qué haces?", "pero además de que uno llegaba",
+                      "Espeer una hora de darme la mano", "de", "y esa es la sección"):
+            pts, _ = asistente.puntaje_activacion(falsa)
+            verificar(f"puntaje_activacion rechaza charla «{falsa}» (< 0.70)", pts < 0.70, f"{pts:.2f}")
+        for valida in ("Hades, abre Firefox", "Oye Hades, qué hora es", "eh, hey Hades"):
+            pts, _ = asistente.puntaje_activacion(valida)
+            verificar(f"puntaje_activacion acepta «{valida}» (>= 0.87)", pts >= 0.87, f"{pts:.2f}")
+    finally:
+        asistente.PALABRA_ACTIVACION, asistente.VARIANTES_ACTIVACION = act_prev
+
+    verificar("tiene_bucle detecta repeticiones de Whisper con ruido",
+              asistente.tiene_bucle("HWite, " * 20)
+              and asistente.tiene_bucle("de la Comunidad " * 15)
+              and not asistente.tiene_bucle("Genera una imagen de un programador cansado"))
 
     return ok, fallos
 

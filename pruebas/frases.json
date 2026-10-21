@@ -867,5 +867,50 @@
     "frase": "¿Cómo enciendo Ollama?",
     "accion": "pregunta",
     "param": "¿Cómo enciendo Ollama?"
+  },
+  {
+    "frase": "Aura Visor Code",
+    "accion": "abrir_app",
+    "param": "visor code",
+    "app_id": [
+      "com.microsoft.VSCode",
+      "code",
+      "code-oss"
+    ]
+  },
+  {
+    "frase": "AuraVisualCode",
+    "accion": "abrir_app",
+    "param": "visualcode",
+    "app_id": [
+      "com.microsoft.VSCode",
+      "code",
+      "code-oss"
+    ]
+  },
+  {
+    "frase": "Presumeme el Portapapeles",
+    "accion": "portapapeles",
+    "param": "resumir"
+  },
+  {
+    "frase": "Detallame el portapapeles",
+    "accion": "portapapeles",
+    "param": "explicar"
+  },
+  {
+    "frase": "Explicame el puerto a papeles",
+    "accion": "portapapeles",
+    "param": "explicar"
+  },
+  {
+    "frase": "Generó una imagen de un trabajador muy cansado, de un programador.",
+    "accion": "imagen",
+    "param": "Generó una imagen de un trabajador muy cansado, de un programador."
+  },
+  {
+    "frase": "and",
+    "accion": "no_entendido",
+    "param": ""
   }
 ]
